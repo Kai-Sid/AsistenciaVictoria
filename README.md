@@ -114,7 +114,7 @@ Variables:
 
 | Variable | Uso |
 | --- | --- |
-| `ALLOWED_ORIGINS` | Origen exacto del sitio, por ejemplo `https://asistenciavictoria.onrender.com`. Varios orígenes se separan con coma. |
+| `ALLOWED_ORIGINS` | Orígenes extra, separados por coma. El sitio publicado `https://asistenciavictoria-web.onrender.com` y `http://localhost:5174` quedan autorizados aunque esta variable solo tenga el origen local. |
 | `FIREBASE_PROJECT_ID` | ID del proyecto Firebase. |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | JSON completo de la cuenta de servicio, en una sola línea. |
 
@@ -140,7 +140,7 @@ Las variables `VITE_` se aplican **durante la compilación**, no al abrir el sit
 
 | Variable | Uso |
 | --- | --- |
-| `VITE_API_BASE_URL` | URL pública del API, sin barra final. Ejemplo: `https://asistenciavictoria-api.onrender.com` |
+| `VITE_API_BASE_URL` | URL pública del API, sin barra final. Ejemplo: `https://asistenciavictoria.onrender.com` |
 | `VITE_FIREBASE_API_KEY` | Configuración pública de la app web |
 | `VITE_FIREBASE_AUTH_DOMAIN` | Igual |
 | `VITE_FIREBASE_PROJECT_ID` | Igual |

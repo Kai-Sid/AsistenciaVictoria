@@ -1,11 +1,9 @@
 import { createApp } from "./app.js";
 import { FirebaseConfigError, initFirebase, type FirestoreReadiness } from "./firebase.js";
+import { resolveAllowedOrigins } from "./origins.js";
 import type { AdminDatabase, AttendanceDatabase, TokenVerifier } from "./types.js";
 
-const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? "http://localhost:5174")
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+const allowedOrigins = resolveAllowedOrigins(process.env.ALLOWED_ORIGINS);
 
 let database: (AttendanceDatabase & AdminDatabase) | null = null;
 let verifyToken: TokenVerifier | null = null;
@@ -29,4 +27,5 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 
 app.listen(port, "0.0.0.0", () => {
   console.log(`AsistenciaVictoria API escuchando en el puerto ${port}`);
+  console.log(`CORS permitido para: ${allowedOrigins.join(", ")}`);
 });

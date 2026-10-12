@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { createApp } from "../src/app.js";
 import { MemoryDatabase } from "../src/memory-db.js";
+import { PUBLISHED_WEB_ORIGIN, resolveAllowedOrigins } from "../src/origins.js";
 import type { TokenVerifier } from "../src/types.js";
 
 const verifyToken: TokenVerifier = async (idToken: string) => {
@@ -217,6 +218,36 @@ test("CORS solo autoriza el origen configurado", async () => {
     const allowed = await fetch(`${base}/api/health`, { headers: { origin: "http://localhost:5174" } });
     assert.equal(allowed.headers.get("access-control-allow-origin"), "http://localhost:5174");
     const blocked = await fetch(`${base}/api/attendance`, { method: "OPTIONS", headers: { origin: "https://otro.example" } });
+    assert.equal(blocked.status, 403);
+    assert.equal(blocked.headers.get("access-control-allow-origin"), null);
+  } finally {
+    server.close();
+  }
+});
+
+test("el frontend publicado queda autorizado aunque ALLOWED_ORIGINS sea solo local", async () => {
+  const origins = resolveAllowedOrigins("http://localhost:5174");
+  assert.deepEqual(origins, ["http://localhost:5174", PUBLISHED_WEB_ORIGIN]);
+  assert.deepEqual(resolveAllowedOrigins(undefined), ["http://localhost:5174", PUBLISHED_WEB_ORIGIN]);
+  const app = createApp({ database: null, verifyToken: null, allowedOrigins: origins });
+  const { server, base } = await listen(app);
+  try {
+    const preflight = await fetch(`${base}/api/attendance`, {
+      method: "OPTIONS",
+      headers: {
+        origin: PUBLISHED_WEB_ORIGIN,
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type",
+      },
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), PUBLISHED_WEB_ORIGIN);
+    assert.equal(preflight.headers.get("access-control-allow-methods"), "GET,POST,OPTIONS");
+    assert.match(preflight.headers.get("access-control-allow-headers") ?? "", /content-type/i);
+    const blocked = await fetch(`${base}/api/attendance`, {
+      method: "OPTIONS",
+      headers: { origin: "https://asistenciavictoria.onrender.com", "access-control-request-method": "POST" },
+    });
     assert.equal(blocked.status, 403);
     assert.equal(blocked.headers.get("access-control-allow-origin"), null);
   } finally {
