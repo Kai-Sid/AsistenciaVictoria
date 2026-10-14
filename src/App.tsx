@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { FirebaseError } from "firebase/app";
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from "firebase/auth";
 import { apiUrl, auth } from "./firebase";
-import { UserRound, LogIn, LogOut, ShieldCheck, Search, Users, RefreshCw } from "lucide-react";
+import { UserRound, LogOut, ShieldCheck, Search, Users, RefreshCw } from "lucide-react";
 
 type EmployeeOption = { id: string; name: string; employeeCode: string; active?: boolean };
 type Result = {
@@ -15,6 +15,7 @@ type Result = {
 };
 type Row = { id: string; employeeName: string; employeeCode: string; checkInAt?: string | null; checkOutAt?: string | null; status: string; workedMinutes?: number | null };
 type NoticeArea = "kiosk" | "login" | "admin";
+type AttendanceAction = "entrada" | "salida";
 const formatDate = (value?: string | null) => {
   if (!value) return "—";
   const date = new Date(value);
@@ -37,7 +38,10 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [employeeName, setEmployeeName] = useState("");
   const [candidates, setCandidates] = useState<EmployeeOption[]>([]);
+  const [pendingAction, setPendingAction] = useState<AttendanceAction | null>(null);
   const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<AttendanceAction | null>(null);
+  const [loginOpen, setLoginOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success"|"error"|"info">("info");
   const [messageArea, setMessageArea] = useState<NoticeArea>("kiosk");
@@ -62,17 +66,20 @@ export default function App() {
     setMessage(text);
   }
 
-  async function mark(selectedId?: string) {
+  async function mark(action: AttendanceAction, selectedId?: string) {
     if (busyRef.current) return;
     const name = employeeName.trim().replace(/\s+/g, " ");
     if (name.length < 2) {
       setResult(null);
       setCandidates([]);
+      setPendingAction(null);
       showNotice("kiosk", "error", "Ingresa tu nombre completo.");
       return;
     }
     busyRef.current = true;
     setBusy(true);
+    setBusyAction(action);
+    setPendingAction(action);
     setMessage("");
     setResult(null);
     if (!selectedId) setCandidates([]);
@@ -80,7 +87,7 @@ export default function App() {
       const response = await fetch(apiUrl("/api/attendance"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(selectedId ? { name, employeeId: selectedId } : { name }),
+        body: JSON.stringify(selectedId ? { name, employeeId: selectedId, action } : { name, action }),
       });
       const data = await readJson(response);
       if (!response.ok || !data) {
@@ -98,6 +105,7 @@ export default function App() {
       showNotice("kiosk", data.ok ? "success" : "error", data.message);
       if (data.ok) {
         setEmployeeName("");
+        setPendingAction(null);
         nameInput.current?.focus();
       }
     } catch (e) {
@@ -109,6 +117,7 @@ export default function App() {
     } finally {
       busyRef.current = false;
       setBusy(false);
+      setBusyAction(null);
     }
   }
 
@@ -124,6 +133,7 @@ export default function App() {
         showNotice("login", "error", "Esta cuenta no tiene permisos de administrador.");
       } else {
         setAdminMode(true);
+        setLoginOpen(false);
         showNotice("admin", "success", "Sesión administrativa iniciada.");
         await loadRows();
       }
@@ -166,34 +176,46 @@ export default function App() {
     setRows([]);
     setAdminMode(false);
     setAdmin(null);
+    setLoginOpen(false);
     setMessage("");
   }
 
   function onNameChange(value: string) {
     setEmployeeName(value);
     setCandidates([]);
+    setPendingAction(null);
     setResult(null);
     if (messageArea === "kiosk") setMessage("");
   }
 
   const filtered = rows.filter(r => `${r.employeeName} ${r.employeeCode}`.toLowerCase().includes(filter.toLowerCase()));
+  const kioskNoticeClass = messageType === "error" && message.includes("No encontramos un trabajador")
+    ? "notice warning"
+    : `notice ${messageType}`;
 
-  if (checkingAuth) return <main className="loading">Cargando AsistenciaVictoria…</main>;
+  if (checkingAuth) return <main className="loading">
+    <img className="brand-logo" src="/logo-victoria.png" alt="Logotipo oficial de Victoria Catering y Eventos" />
+    <p>Cargando AsistenciaVictoria…</p>
+  </main>;
 
   return <main className="shell">
     <header className="site-header">
-      <div className="brand-mini"><div className="mini-mark">V</div><span>VICTORIA <small>CATERING & EVENTOS</small></span></div>
       {adminMode
-        ? <button className="login-button" onClick={logout}><LogOut size={17}/> Cerrar sesión</button>
-        : <button className="login-button" onClick={() => { setMessage(""); document.getElementById("admin-login")?.scrollIntoView({ behavior: "smooth" }); }}><UserRound size={17}/> Iniciar sesión</button>}
+        ? <button className="login-button" type="button" onClick={logout}><LogOut size={17}/> Cerrar sesión</button>
+        : <button className="login-button" type="button" aria-expanded={loginOpen} onClick={() => { setMessage(""); setLoginOpen(open => !open); }}><UserRound size={17}/> Iniciar sesión</button>}
     </header>
 
-    {!adminMode ? <section className="kiosk-card">
-      <div className="logo-frame"><div className="logo-emblem"><span className="ornament">✺</span><strong>V</strong><span className="logo-word">VICTORIA</span><small>CATERING & EVENTOS</small></div></div>
-      <p className="eyebrow">CONTROL DE PERSONAL</p>
-      <h1>Control de Asistencia</h1>
-      <p className="subtitle">Escribe tu nombre completo para registrar tu entrada o tu salida.</p>
-      <form onSubmit={(e) => { e.preventDefault(); void mark(); }}>
+    <div className="brand">
+      <img className="brand-logo" src="/logo-victoria.png" alt="Logotipo oficial de Victoria Catering y Eventos" />
+    </div>
+
+    {!adminMode && !loginOpen && <section className="kiosk-card">
+      <header className="kiosk-intro">
+        <p className="eyebrow">CONTROL DE PERSONAL</p>
+        <h1>Control de Asistencia</h1>
+        <p className="subtitle">Escribe tu nombre completo y elige si registras tu entrada o tu salida.</p>
+      </header>
+      <form onSubmit={(e) => e.preventDefault()}>
         <div className="fields">
           <label>
             <span>Ingresa tu nombre completo</span>
@@ -201,19 +223,28 @@ export default function App() {
           </label>
         </div>
         <div className="actions">
-          <button type="submit" disabled={busy}>Registrar entrada / salida</button>
+          <button className="entry" type="button" disabled={busy} aria-busy={busy && busyAction === "entrada"} onClick={() => void mark("entrada")}>
+            {busy && busyAction === "entrada" && <span className="spinner" aria-hidden="true" />}
+            {busy && busyAction === "entrada" ? "Registrando entrada…" : "Registrar entrada"}
+          </button>
+          <button className="exit" type="button" disabled={busy} aria-busy={busy && busyAction === "salida"} onClick={() => void mark("salida")}>
+            {busy && busyAction === "salida" && <span className="spinner spinner-light" aria-hidden="true" />}
+            {busy && busyAction === "salida" ? "Registrando salida…" : "Registrar salida"}
+          </button>
         </div>
       </form>
-      {candidates.length > 1 && <div className="candidates" role="list">
-        {candidates.map(person => <button key={person.id} type="button" disabled={busy} onClick={() => void mark(person.id)}>
+      {candidates.length > 1 && pendingAction && <div className="candidates" role="list">
+        <p>{pendingAction === "salida" ? "Selecciona tu nombre para registrar la salida." : "Selecciona tu nombre para registrar la entrada."}</p>
+        {candidates.map(person => <button key={person.id} type="button" disabled={busy} onClick={() => void mark(pendingAction, person.id)}>
           <strong>{person.name}</strong>
           <span>{person.employeeCode}</span>
         </button>)}
       </div>}
-      {busy && <div className="progress" aria-hidden="true"><span/></div>}
-      {message && messageArea === "kiosk" && <div className={`notice ${messageType}`} role="status">{message}</div>}
+      {message && messageArea === "kiosk" && <div className={kioskNoticeClass} role="status">{message}</div>}
       {result?.ok && result.timestamp && <p className="receipt">{result.employeeName} · {result.action === "salida" ? "Salida" : "Entrada"} · {new Date(result.timestamp).toLocaleString("es-PE", { dateStyle: "medium", timeStyle: "medium" })}</p>}
-    </section> : <section className="admin-panel">
+    </section>}
+
+    {adminMode && <section className="admin-panel">
       <div className="admin-heading"><div><p className="eyebrow">ADMINISTRACIÓN</p><h1>Registros de asistencia</h1><p className="subtitle">{admin?.email} · Últimos 500 registros</p></div><button className="refresh" onClick={loadRows} disabled={busy}><RefreshCw size={17}/> Actualizar</button></div>
       {message && messageArea === "admin" && <div className={`notice ${messageType}`} role="status">{message}</div>}
       <div className="admin-tools"><div className="searchbox"><Search size={17}/><input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Buscar por nombre o código"/></div><div className="record-count"><Users size={17}/> {filtered.length} registros</div></div>
@@ -221,13 +252,19 @@ export default function App() {
       <p className="admin-note"><ShieldCheck size={16}/> Solo las cuentas con rol administrativo pueden consultar esta tabla.</p>
     </section>}
 
-    {!adminMode && <section id="admin-login" className="admin-login">
-      <div className="admin-login-icon"><ShieldCheck size={22}/></div>
-      <div className="admin-login-copy"><strong>Acceso administrativo</strong><span>Consulta los registros de todo el personal.</span></div>
+    {!adminMode && loginOpen && <section className="login-panel" aria-labelledby="login-title">
+      <h2 id="login-title">Sesión de administrador</h2>
+      <p>Consulta los registros de todo el personal.</p>
       <form onSubmit={login} className="login-form">
-        <input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="Correo administrador"/>
-        <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="Contraseña"/>
-        <button disabled={busy}>Iniciar sesión <LogIn size={16}/></button>
+        <label>
+          <span>Correo</span>
+          <input type="email" required autoFocus value={email} onChange={e => setEmail(e.target.value)} placeholder="Correo administrador" autoComplete="username"/>
+        </label>
+        <label>
+          <span>Contraseña</span>
+          <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="Contraseña" autoComplete="current-password"/>
+        </label>
+        <button type="submit" disabled={busy}>{busy ? "Entrando…" : "Entrar"}</button>
       </form>
       {message && messageArea === "login" && <p className={`notice ${messageType}`}>{message}</p>}
     </section>}

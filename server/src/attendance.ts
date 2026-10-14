@@ -4,12 +4,16 @@ import type { AttendanceChoice, AttendanceDatabase, AttendanceSuccess, EmployeeM
 
 const NOT_FOUND = "No encontramos un trabajador registrado con ese nombre.";
 const CHOOSE = "Hay varios trabajadores con ese nombre. Selecciona el correcto.";
+const ALREADY_OPEN = "Ya tienes una jornada abierta. Registra tu salida cuando termines.";
+const NO_OPEN = "No hay una jornada abierta. Registra tu entrada primero.";
 
-export function parseAttendanceInput(body: unknown): { name: string; employeeId: string } {
+export type AttendanceAction = "entrada" | "salida";
+
+export function parseAttendanceInput(body: unknown): { name: string; employeeId: string; action: AttendanceAction } {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new HttpError(400, "La solicitud no es válida.");
   }
-  const record = body as { name?: unknown; employeeId?: unknown };
+  const record = body as { name?: unknown; employeeId?: unknown; action?: unknown };
   const name = collapseName(String(record.name ?? ""));
   const employeeId = record.employeeId == null ? "" : String(record.employeeId).trim();
   if (name.length < 2 || name.length > 100) {
@@ -18,7 +22,10 @@ export function parseAttendanceInput(body: unknown): { name: string; employeeId:
   if (employeeId.includes("/") || employeeId.length > 128 || /[\u0000-\u001f]/.test(employeeId)) {
     throw new HttpError(400, "El trabajador seleccionado no es válido.");
   }
-  return { name, employeeId };
+  if (record.action !== "entrada" && record.action !== "salida") {
+    throw new HttpError(400, "La acción no es válida. Usa entrada o salida.");
+  }
+  return { name, employeeId, action: record.action };
 }
 
 function workedLabel(minutes: number): string {
@@ -27,7 +34,7 @@ function workedLabel(minutes: number): string {
 
 export async function recordAttendance(
   db: AttendanceDatabase,
-  input: { name: string; employeeId: string },
+  input: { name: string; employeeId: string; action: AttendanceAction },
   now: Date,
 ): Promise<AttendanceSuccess | AttendanceChoice> {
   const wanted = normalizeName(input.name);
@@ -69,7 +76,8 @@ export async function recordAttendance(
       throw new HttpError(409, "Hay más de una jornada abierta. Contacta al administrador.");
     }
 
-    if (open.length === 0) {
+    if (input.action === "entrada") {
+      if (open.length > 0) throw new HttpError(409, ALREADY_OPEN);
       tx.createOpenAttendance({
         employeeId: current.id,
         employeeCode: current.employeeCode,
@@ -87,6 +95,7 @@ export async function recordAttendance(
       };
     }
 
+    if (open.length === 0) throw new HttpError(409, NO_OPEN);
     const shift = open[0];
     if (!(shift.checkInAt instanceof Date) || Number.isNaN(shift.checkInAt.getTime())) {
       throw new HttpError(409, "La jornada abierta no tiene una hora de entrada válida. Contacta al administrador.");

@@ -41,121 +41,214 @@ test("GET /api/health responde aunque Firestore no esté configurado", async () 
   }
 });
 
-test("la marcación valida el nombre, los homónimos, la entrada y la salida sin Firestore real", async () => {
-  const db = new MemoryDatabase();
-  const now = new Date("2026-10-11T18:00:00.000Z");
-  db.employees.push(
-    { id: "ana-1", name: "Ana López", employeeCode: "VIC-001", active: true, pinHash: "secreto" },
-    { id: "ana-2", name: "Ana Lopez", employeeCode: "VIC-002", active: true, pinHash: "otro-secreto" },
-    { id: "inactivo", name: "Luis Ramos", employeeCode: "VIC-009", active: false, pinHash: "no-visible" },
-  );
-  const app = createApp({
+const fixedNow = new Date("2026-10-11T18:00:00.000Z");
+
+async function postAttendance(base: string, body: unknown) {
+  const response = await fetch(`${base}/api/attendance`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { status: response.status, body: await response.json() };
+}
+
+function attendanceApp(db: MemoryDatabase, now = fixedNow) {
+  return createApp({
     database: db,
     verifyToken,
     allowedOrigins: ["http://localhost:5174"],
     now: () => now,
   });
-  const { server, base } = await listen(app);
+}
+
+test("rechaza el nombre vacío o compuesto solo por espacios", async () => {
+  const db = new MemoryDatabase();
+  db.employees.push({ id: "ana-1", name: "Ana López", employeeCode: "VIC-001", active: true });
+  const { server, base } = await listen(attendanceApp(db));
   try {
-    const empty = await fetch(`${base}/api/attendance`, {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: "http://localhost:5174" },
-      body: JSON.stringify({ name: "   " }),
-    });
-    assert.equal(empty.status, 400);
-    assert.equal((await empty.json()).message, "Ingresa tu nombre completo.");
-
-    const missing = await fetch(`${base}/api/attendance`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "Persona Inexistente" }),
-    });
-    assert.equal(missing.status, 404);
-    assert.equal((await missing.json()).message, "No encontramos un trabajador registrado con ese nombre.");
-
-    const inactive = await fetch(`${base}/api/attendance`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "Luis Ramos" }),
-    });
-    assert.equal(inactive.status, 404);
-
-    const choice = await fetch(`${base}/api/attendance`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "ana   lópez" }),
-    });
-    const choiceBody = await choice.json();
-    assert.equal(choice.status, 200);
-    assert.equal(choiceBody.ok, false);
-    assert.equal(choiceBody.employees.length, 2);
-    assert.equal(JSON.stringify(choiceBody).includes("pinHash"), false);
-    assert.equal(JSON.stringify(choiceBody).includes("secreto"), false);
+    for (const name of ["", "   ", " \n\t "]) {
+      const result = await postAttendance(base, { name, action: "entrada" });
+      assert.equal(result.status, 400);
+      assert.equal(result.body.ok, false);
+      assert.equal(result.body.message, "Ingresa tu nombre completo.");
+    }
     assert.equal(db.attendances.length, 0);
-
-    const entry = await fetch(`${base}/api/attendance`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "Ana López", employeeId: "ana-1" }),
-    });
-    const entryBody = await entry.json();
-    assert.equal(entry.status, 200);
-    assert.equal(entryBody.ok, true);
-    assert.equal(entryBody.action, "entrada");
-    assert.equal(entryBody.employeeName, "Ana López");
-    assert.equal(db.attendances.length, 1);
-    assert.equal(db.attendances[0].status, "open");
-    assert.equal(db.attendances[0].employeeCode, "VIC-001");
-    assert.equal("pinHash" in db.attendances[0], false);
-
-    db.attendances[0].checkInAt = hoursBefore(now, 2);
-    const exit = await fetch(`${base}/api/attendance`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "Ana López", employeeId: "ana-1" }),
-    });
-    const exitBody = await exit.json();
-    assert.equal(exit.status, 200);
-    assert.equal(exitBody.action, "salida");
-    assert.match(exitBody.message, /Salida registrada para Ana López/);
-    assert.equal(db.attendances.length, 1);
-    assert.equal(db.attendances[0].status, "closed");
-    assert.equal(db.attendances[0].workedMinutes, 120);
-    assert.ok(db.attendances[0].checkOutAt instanceof Date);
-    assert.ok(db.attendances[0].updatedAt instanceof Date);
   } finally {
     server.close();
   }
 });
 
-test("dos marcaciones simultáneas no dejan dos jornadas abiertas", async () => {
+test("rechaza un trabajador inexistente", async () => {
+  const db = new MemoryDatabase();
+  const { server, base } = await listen(attendanceApp(db));
+  try {
+    const result = await postAttendance(base, { name: "Persona Inexistente", action: "entrada" });
+    assert.equal(result.status, 404);
+    assert.equal(result.body.ok, false);
+    assert.equal(result.body.message, "No encontramos un trabajador registrado con ese nombre.");
+    assert.equal(db.attendances.length, 0);
+  } finally {
+    server.close();
+  }
+});
+
+test("rechaza un trabajador inactivo", async () => {
+  const db = new MemoryDatabase();
+  db.employees.push({ id: "inactivo", name: "Luis Ramos", employeeCode: "VIC-009", active: false, pinHash: "no-visible" });
+  const { server, base } = await listen(attendanceApp(db));
+  try {
+    const entry = await postAttendance(base, { name: "Luis Ramos", action: "entrada" });
+    const exit = await postAttendance(base, { name: "luis ramos", action: "salida" });
+    assert.equal(entry.status, 404);
+    assert.equal(exit.status, 404);
+    assert.equal(entry.body.ok, false);
+    assert.equal(JSON.stringify(entry.body).includes("pinHash"), false);
+    assert.equal(JSON.stringify(entry.body).includes("no-visible"), false);
+    assert.equal(db.attendances.length, 0);
+  } finally {
+    server.close();
+  }
+});
+
+test("registra la entrada y rechaza una segunda entrada sin convertirla en salida", async () => {
+  const db = new MemoryDatabase();
+  db.employees.push({ id: "ana-1", name: "Ana López", employeeCode: "VIC-001", active: true, pinHash: "secreto" });
+  const { server, base } = await listen(attendanceApp(db));
+  try {
+    const entry = await postAttendance(base, { name: "ana   lópez", action: "entrada" });
+    assert.equal(entry.status, 200);
+    assert.equal(entry.body.ok, true);
+    assert.equal(entry.body.action, "entrada");
+    assert.equal(entry.body.employeeName, "Ana López");
+    assert.match(entry.body.message, /Entrada registrada/);
+    assert.equal(db.attendances.length, 1);
+    assert.equal(db.attendances[0].status, "open");
+    assert.equal(db.attendances[0].employeeId, "ana-1");
+    assert.ok(db.attendances[0].checkInAt instanceof Date);
+    assert.equal(db.attendances[0].checkOutAt, undefined);
+    assert.equal("pinHash" in db.attendances[0], false);
+
+    const duplicate = await postAttendance(base, { name: "Ana López", action: "entrada" });
+    assert.equal(duplicate.status, 409);
+    assert.equal(duplicate.body.ok, false);
+    assert.match(duplicate.body.message, /jornada abierta/);
+    assert.equal(db.attendances.length, 1);
+    assert.equal(db.attendances[0].status, "open");
+    assert.equal(db.attendances[0].checkOutAt, undefined);
+  } finally {
+    server.close();
+  }
+});
+
+test("rechaza la salida sin entrada y cierra la jornada abierta cuando existe", async () => {
+  const db = new MemoryDatabase();
+  db.employees.push({ id: "ana-1", name: "Ana López", employeeCode: "VIC-001", active: true });
+  const { server, base } = await listen(attendanceApp(db));
+  try {
+    const missing = await postAttendance(base, { name: "Ana López", action: "salida" });
+    assert.equal(missing.status, 409);
+    assert.equal(missing.body.ok, false);
+    assert.match(missing.body.message, /No hay una jornada abierta/);
+    assert.equal(db.attendances.length, 0);
+
+    const entry = await postAttendance(base, { name: "Ana López", action: "entrada" });
+    assert.equal(entry.body.action, "entrada");
+    db.attendances[0].checkInAt = hoursBefore(fixedNow, 2);
+
+    const exit = await postAttendance(base, { name: "Ana López", action: "salida" });
+    assert.equal(exit.status, 200);
+    assert.equal(exit.body.ok, true);
+    assert.equal(exit.body.action, "salida");
+    assert.match(exit.body.message, /Salida registrada para Ana López/);
+    assert.equal(db.attendances.length, 1);
+    assert.equal(db.attendances[0].status, "closed");
+    assert.equal(db.attendances[0].workedMinutes, 120);
+    assert.ok(db.attendances[0].checkOutAt instanceof Date);
+    assert.ok(db.attendances[0].updatedAt instanceof Date);
+
+    const again = await postAttendance(base, { name: "Ana López", action: "salida" });
+    assert.equal(again.status, 409);
+    assert.equal(db.attendances.length, 1);
+    assert.equal(db.attendances[0].status, "closed");
+  } finally {
+    server.close();
+  }
+});
+
+test("dos solicitudes de entrada simultáneas dejan una sola jornada abierta", async () => {
   const db = new MemoryDatabase();
   db.employees.push({ id: "sofia", name: "Sofía Díaz", employeeCode: "VIC-010", active: true });
-  const app = createApp({
-    database: db,
-    verifyToken,
-    allowedOrigins: ["http://localhost:5174"],
-    now: () => new Date("2026-10-11T18:30:00.000Z"),
-  });
-  const { server, base } = await listen(app);
+  const { server, base } = await listen(attendanceApp(db, new Date("2026-10-11T18:30:00.000Z")));
   try {
     const responses = await Promise.all([
-      fetch(`${base}/api/attendance`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "Sofia Diaz" }),
-      }),
-      fetch(`${base}/api/attendance`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "Sofia Diaz" }),
-      }),
+      postAttendance(base, { name: "Sofia Diaz", action: "entrada" }),
+      postAttendance(base, { name: "Sofia Diaz", action: "entrada" }),
     ]);
-    const bodies = await Promise.all(responses.map((response) => response.json()));
-    const actions = bodies.map((body) => body.action).sort();
-    assert.deepEqual(actions, ["entrada", "salida"]);
+    const statuses = responses.map((result) => result.status).sort();
+    assert.deepEqual(statuses, [200, 409]);
+    assert.equal(responses.filter((result) => result.body.ok === true && result.body.action === "entrada").length, 1);
     assert.equal(db.attendances.length, 1);
-    assert.equal(db.attendances.filter((row) => row.status === "open").length, 0);
+    assert.equal(db.attendances.filter((row) => row.status === "open").length, 1);
+    assert.equal(db.attendances.filter((row) => row.status === "closed").length, 0);
+  } finally {
+    server.close();
+  }
+});
+
+test("rechaza una acción desconocida", async () => {
+  const db = new MemoryDatabase();
+  db.employees.push({ id: "ana-1", name: "Ana López", employeeCode: "VIC-001", active: true });
+  const { server, base } = await listen(attendanceApp(db));
+  try {
+    for (const action of [undefined, "", "ENTRADA", "toggle", 1]) {
+      const result = await postAttendance(base, { name: "Ana López", action });
+      assert.equal(result.status, 400);
+      assert.equal(result.body.ok, false);
+      assert.equal(result.body.message, "La acción no es válida. Usa entrada o salida.");
+    }
+    assert.equal(db.attendances.length, 0);
+  } finally {
+    server.close();
+  }
+});
+
+test("los homónimos exigen elegir al trabajador y no marcan a otra persona", async () => {
+  const db = new MemoryDatabase();
+  db.employees.push(
+    { id: "ana-1", name: "Ana López", employeeCode: "VIC-001", active: true, pinHash: "secreto" },
+    { id: "ana-2", name: "Ana Lopez", employeeCode: "VIC-002", active: true, pinHash: "otro-secreto" },
+    { id: "mario", name: "Mario Quispe", employeeCode: "VIC-003", active: true },
+  );
+  const { server, base } = await listen(attendanceApp(db));
+  try {
+    const choice = await postAttendance(base, { name: "ana   lópez", action: "salida" });
+    assert.equal(choice.status, 200);
+    assert.equal(choice.body.ok, false);
+    assert.equal(choice.body.employees.length, 2);
+    assert.deepEqual(choice.body.employees.map((person: { id: string }) => person.id).sort(), ["ana-1", "ana-2"]);
+    assert.equal(JSON.stringify(choice.body).includes("pinHash"), false);
+    assert.equal(JSON.stringify(choice.body).includes("secreto"), false);
+    assert.equal(db.attendances.length, 0);
+
+    const wrong = await postAttendance(base, { name: "Ana López", employeeId: "mario", action: "entrada" });
+    assert.equal(wrong.status, 400);
+    assert.match(wrong.body.message, /no coincide/);
+    assert.equal(db.attendances.length, 0);
+
+    const selected = await postAttendance(base, { name: "Ana López", employeeId: "ana-2", action: "entrada" });
+    assert.equal(selected.status, 200);
+    assert.equal(selected.body.ok, true);
+    assert.equal(selected.body.action, "entrada");
+    assert.equal(db.attendances.length, 1);
+    assert.equal(db.attendances[0].employeeId, "ana-2");
+    assert.equal(db.attendances[0].employeeCode, "VIC-002");
+    assert.equal(db.attendances[0].status, "open");
+
+    const otherExit = await postAttendance(base, { name: "Ana López", employeeId: "ana-1", action: "salida" });
+    assert.equal(otherExit.status, 409);
+    assert.equal(db.attendances.length, 1);
+    assert.equal(db.attendances[0].employeeId, "ana-2");
+    assert.equal(db.attendances[0].status, "open");
   } finally {
     server.close();
   }
@@ -267,7 +360,7 @@ test("una escritura fallida no confirma la marcación", async () => {
     const response = await fetch(`${base}/api/attendance`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "Ana López" }),
+      body: JSON.stringify({ name: "Ana López", action: "entrada" }),
     });
     const body = await response.json();
     assert.equal(response.status, 503);
