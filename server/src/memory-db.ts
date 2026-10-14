@@ -1,4 +1,3 @@
-import bcrypt from "bcryptjs";
 import { HttpError } from "./http-error.js";
 import type {
   AdminDatabase,
@@ -42,17 +41,15 @@ export class MemoryDatabase implements AttendanceDatabase, AdminDatabase {
     return `${prefix}-${this.sequence}`;
   }
 
-  async createEmployee(input: { name: string; employeeCode: string; pin: string }): Promise<EmployeePublic> {
+  async createEmployee(input: { name: string; employeeCode: string }): Promise<EmployeePublic> {
     if (this.employees.some((employee) => employee.employeeCode === input.employeeCode)) {
       throw new HttpError(409, "Ese código de trabajador ya existe.");
     }
-    const pinHash = await bcrypt.hash(input.pin, 12);
     const employee: StoredEmployee = {
       id: this.nextId("emp"),
       name: input.name,
       employeeCode: input.employeeCode,
       active: true,
-      pinHash,
       createdAt: new Date(),
     };
     this.employees.push(employee);

@@ -73,7 +73,7 @@ Endpoints de personal y registros, todos con `Authorization: Bearer <ID token>`:
 
 - `GET /api/admin/attendances`
 - `GET /api/admin/employees`
-- `POST /api/admin/employees` con `name`, `employeeCode` y `pin`
+- `POST /api/admin/employees` con `name` y `employeeCode`
 - `POST /api/admin/employees/active` con `employeeId` y `active`
 
 Endpoints de cuentas, con la misma autorización:
@@ -85,7 +85,7 @@ Endpoints de cuentas, con la misma autorización:
 
 `POST /api/admin/accounts` crea el usuario en Firebase Authentication y después el documento `accounts/{uid}` con `name`, `email`, `role: "admin"`, `active: true`, `createdAt` y `updatedAt`. También conserva el claim `admin: true` para la transición. Si el documento no llega a guardarse, se elimina solo el usuario creado en esa petición. No se puede desactivar al último administrador activo.
 
-`createEmployee` guarda el PIN solo como `pinHash`. Ninguna respuesta incluye `pin`, `pinHash` ni la contraseña de una cuenta. El panel administrativo usa estos endpoints para listar, registrar y activar o desactivar personal. `GET /api/admin/employees` incluye `createdAt` en ISO cuando el documento ya tiene esa fecha; si no existe, el valor es `null`.
+El alta de un trabajador guarda nombre, código, estado y fecha. No escribe `pin` ni `pinHash`. Los documentos de personal que ya tenían `pinHash` no se reescriben. Ninguna respuesta incluye `pin`, `pinHash` ni la contraseña de una cuenta. El panel administrativo usa estos endpoints para listar, registrar y activar o desactivar personal. `GET /api/admin/employees` incluye `createdAt` en ISO cuando el documento ya tiene esa fecha; si no existe, el valor es `null`.
 
 ### Primera cuenta de administrador
 

@@ -1,4 +1,3 @@
-import bcrypt from "bcryptjs";
 import { FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore";
 import { HttpError } from "./http-error.js";
 import type {
@@ -95,14 +94,12 @@ export class FirestoreDatabase implements AttendanceDatabase, AdminDatabase {
     });
   }
 
-  async createEmployee(input: { name: string; employeeCode: string; pin: string }): Promise<EmployeePublic> {
+  async createEmployee(input: { name: string; employeeCode: string }): Promise<EmployeePublic> {
     const existing = await this.db.collection("employees").where("employeeCode", "==", input.employeeCode).limit(1).get();
     if (!existing.empty) throw new HttpError(409, "Ese código de trabajador ya existe.");
-    const pinHash = await bcrypt.hash(input.pin, 12);
     const ref = await this.db.collection("employees").add({
       name: input.name,
       employeeCode: input.employeeCode,
-      pinHash,
       active: true,
       createdAt: FieldValue.serverTimestamp(),
     });

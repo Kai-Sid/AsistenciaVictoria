@@ -58,7 +58,7 @@ export type AttendanceDatabase = {
 };
 
 export type AdminDatabase = {
-  createEmployee(input: { name: string; employeeCode: string; pin: string }): Promise<EmployeePublic>;
+  createEmployee(input: { name: string; employeeCode: string }): Promise<EmployeePublic>;
   listEmployees(): Promise<EmployeeRecord[]>;
   listAttendances(): Promise<AttendanceView[]>;
   setEmployeeActive(employeeId: string, active: boolean): Promise<{ ok: true }>;

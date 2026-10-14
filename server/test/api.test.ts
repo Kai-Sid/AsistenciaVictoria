@@ -288,11 +288,14 @@ test("los endpoints administrativos exigen el claim admin y no devuelven pinHash
       body: JSON.stringify({ name: "Mario Quispe", employeeCode: "vic-020", pin: "1234" }),
     });
     const createdBody = await created.json();
+    const createdEmployeeRecord = db.employees.find((employee) => employee.employeeCode === "VIC-020");
     assert.equal(created.status, 201);
     assert.equal(createdBody.employeeCode, "VIC-020");
     assert.equal(createdBody.pin, undefined);
     assert.equal(JSON.stringify(createdBody).includes("pinHash"), false);
-    assert.equal(db.employees.some((employee) => employee.employeeCode === "VIC-020" && typeof employee.pinHash === "string"), true);
+    assert.equal(JSON.stringify(createdBody).includes("1234"), false);
+    assert.equal(createdEmployeeRecord?.pinHash, undefined);
+    assert.equal(db.employees.find((employee) => employee.id === "ana-1")?.pinHash, "hash-privado");
 
     const disabled = await fetch(`${base}/api/admin/employees/active`, {
       method: "POST",
@@ -301,6 +304,15 @@ test("los endpoints administrativos exigen el claim admin y no devuelven pinHash
     });
     assert.equal(disabled.status, 200);
     assert.equal(db.employees.find((employee) => employee.id === createdBody.id)?.active, false);
+
+    const enabled = await fetch(`${base}/api/admin/employees/active`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer admin-token" },
+      body: JSON.stringify({ employeeId: createdBody.id, active: true }),
+    });
+    assert.equal(enabled.status, 200);
+    assert.equal(db.employees.find((employee) => employee.id === createdBody.id)?.active, true);
+    assert.equal(db.employees.find((employee) => employee.id === createdBody.id)?.pinHash, undefined);
 
     const listedAgain = await fetch(`${base}/api/admin/employees`, { headers: { authorization: "Bearer admin-token" } });
     const listedAgainBody = await listedAgain.json();
@@ -313,7 +325,7 @@ test("los endpoints administrativos exigen el claim admin y no devuelven pinHash
     const duplicate = await fetch(`${base}/api/admin/employees`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer admin-token" },
-      body: JSON.stringify({ name: "Mario Quispe", employeeCode: "VIC-020", pin: "5678" }),
+      body: JSON.stringify({ name: "Mario Quispe", employeeCode: "VIC-020" }),
     });
     assert.equal(duplicate.status, 409);
     assert.equal((await duplicate.json()).message, "Ese código de trabajador ya existe.");

@@ -11,10 +11,9 @@ type Employee = {
 };
 
 type Notice = { type: "success" | "error"; text: string };
-type FieldErrors = { name?: string; employeeCode?: string; pin?: string; pinConfirm?: string };
+type FieldErrors = { name?: string; employeeCode?: string };
 
 const CODE_PATTERN = /^[A-Z0-9-]{3,20}$/;
-const PIN_PATTERN = /^\d{4,8}$/;
 
 function formatCreated(value: string | null) {
   if (!value) return "—";
@@ -63,8 +62,6 @@ export default function StaffPanel() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [name, setName] = useState("");
   const [employeeCode, setEmployeeCode] = useState("");
-  const [pin, setPin] = useState("");
-  const [pinConfirm, setPinConfirm] = useState("");
   const [deactivateTarget, setDeactivateTarget] = useState<Employee | null>(null);
   const [dialogError, setDialogError] = useState("");
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -130,12 +127,6 @@ export default function StaffPanel() {
     if (!CODE_PATTERN.test(code)) {
       errors.employeeCode = "El código debe tener de 3 a 20 caracteres: letras, números o guiones.";
     }
-    if (!PIN_PATTERN.test(pin)) {
-      errors.pin = "El PIN debe tener de 4 a 8 dígitos.";
-    }
-    if (pin !== pinConfirm) {
-      errors.pinConfirm = "Los PIN no coinciden.";
-    }
     return errors;
   }
 
@@ -155,7 +146,7 @@ export default function StaffPanel() {
     try {
       const response = await authorized("/api/admin/employees", {
         method: "POST",
-        body: JSON.stringify({ name: cleanName, employeeCode: code, pin }),
+        body: JSON.stringify({ name: cleanName, employeeCode: code }),
       });
       const data = await readBody(response);
       if (!response.ok) {
@@ -164,10 +155,8 @@ export default function StaffPanel() {
       }
       setName("");
       setEmployeeCode("");
-      setPin("");
-      setPinConfirm("");
       setFieldErrors({});
-      setNotice({ type: "success", text: "Trabajador registrado. El PIN quedó guardado de forma protegida." });
+      setNotice({ type: "success", text: "Trabajador registrado." });
       await loadEmployees(true);
     } catch (error) {
       console.error(error instanceof Error ? error.name : "error");
@@ -220,10 +209,10 @@ export default function StaffPanel() {
           <header className="card-head">
             <div>
               <h2 id="staff-form-title">Registrar trabajador</h2>
-              <p>El código distingue a quienes comparten nombre. El PIN no se vuelve a mostrar.</p>
+              <p>El código distingue a quienes comparten nombre.</p>
             </div>
           </header>
-          <form className="staff-form" onSubmit={(event) => void createEmployee(event)} noValidate>
+          <form className="staff-form staff-register" onSubmit={(event) => void createEmployee(event)} noValidate>
             <label className="field">
               <span>Nombre completo</span>
               <input value={name} onChange={(event) => setName(event.target.value)} maxLength={100} autoComplete="name" disabled={saving} aria-invalid={Boolean(fieldErrors.name)} />
@@ -233,16 +222,6 @@ export default function StaffPanel() {
               <span>Código</span>
               <input value={employeeCode} onChange={(event) => setEmployeeCode(event.target.value.toUpperCase())} maxLength={20} autoComplete="off" spellCheck={false} disabled={saving} aria-invalid={Boolean(fieldErrors.employeeCode)} placeholder="VIC-001" />
               {fieldErrors.employeeCode && <small className="field-error">{fieldErrors.employeeCode}</small>}
-            </label>
-            <label className="field">
-              <span>PIN</span>
-              <input type="password" inputMode="numeric" value={pin} onChange={(event) => setPin(event.target.value)} maxLength={8} autoComplete="new-password" disabled={saving} aria-invalid={Boolean(fieldErrors.pin)} />
-              {fieldErrors.pin && <small className="field-error">{fieldErrors.pin}</small>}
-            </label>
-            <label className="field">
-              <span>Confirmar PIN</span>
-              <input type="password" inputMode="numeric" value={pinConfirm} onChange={(event) => setPinConfirm(event.target.value)} maxLength={8} autoComplete="new-password" disabled={saving} aria-invalid={Boolean(fieldErrors.pinConfirm)} />
-              {fieldErrors.pinConfirm && <small className="field-error">{fieldErrors.pinConfirm}</small>}
             </label>
             <button className="btn btn-primary" type="submit" disabled={saving}>
               {saving && <span className="spinner spinner-light" aria-hidden="true" />}

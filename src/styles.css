@@ -939,6 +939,11 @@ button:disabled { cursor: not-allowed; }
 
 .staff-form { display: grid; gap: 12px; }
 
+.staff-register {
+  align-content: start;
+  grid-auto-rows: min-content;
+}
+
 .staff-form input {
   min-height: 46px;
   padding: 10px 12px;

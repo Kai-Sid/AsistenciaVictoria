@@ -74,18 +74,17 @@ async function requireAdmin(req: Request, verifyToken: TokenVerifier | null, acc
   throw new HttpError(403, ADMIN_DENIED);
 }
 
-function parseCreateEmployee(body: unknown): { name: string; employeeCode: string; pin: string } {
+function parseCreateEmployee(body: unknown): { name: string; employeeCode: string } {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new HttpError(400, "La solicitud no es válida.");
   }
-  const record = body as { name?: unknown; employeeCode?: unknown; pin?: unknown };
+  const record = body as { name?: unknown; employeeCode?: unknown };
   const name = String(record.name ?? "").trim();
   const employeeCode = String(record.employeeCode ?? "").trim().toUpperCase();
-  const pin = String(record.pin ?? "");
-  if (name.length < 2 || name.length > 100 || !/^[A-Z0-9-]{3,20}$/.test(employeeCode) || !/^\d{4,8}$/.test(pin)) {
-    throw new HttpError(400, "Nombre, código o PIN no válidos. El PIN debe tener de 4 a 8 dígitos.");
+  if (name.length < 2 || name.length > 100 || !/^[A-Z0-9-]{3,20}$/.test(employeeCode)) {
+    throw new HttpError(400, "Nombre o código no válidos.");
   }
-  return { name, employeeCode, pin };
+  return { name, employeeCode };
 }
 
 function parseCreateAccount(body: unknown): { name: string; email: string; password: string } {
