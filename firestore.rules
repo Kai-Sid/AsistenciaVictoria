@@ -1,7 +1,7 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // El navegador no lee ni escribe estas colecciones.
+    // El navegador no lee ni escribe employees, attendances, pinAttempts ni accounts.
     // La marcación y el panel usan el backend de Render con Firebase Admin SDK.
     // Hasta publicar este archivo, en la nube siguen vigentes las reglas anteriores:
     // un administrador autenticado podía leer y escribir attendances desde el cliente.
@@ -12,6 +12,9 @@ service cloud.firestore {
       allow read, write: if false;
     }
     match /pinAttempts/{attemptId} {
+      allow read, write: if false;
+    }
+    match /accounts/{accountId} {
       allow read, write: if false;
     }
   }

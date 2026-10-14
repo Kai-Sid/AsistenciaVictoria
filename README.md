@@ -60,34 +60,58 @@ La comparación de la jornada abierta y la escritura ocurren dentro de una trans
 
 ## Administración
 
-El administrador entra con correo y contraseña de Firebase Authentication. El cliente solo muestra el panel si el token tiene el claim `admin: true`. El backend vuelve a comprobar ese claim con `verifyIdToken`; no acepta un correo enviado por el navegador.
+El administrador entra con correo y contraseña de Firebase Authentication. La contraseña no se guarda en Firestore. El navegador envía el ID token y el backend lo verifica con Firebase Admin SDK. El panel solo se abre si `GET /api/admin/session` autoriza la sesión.
 
-Endpoints, todos con `Authorization: Bearer <ID token>`:
+La autorización administrativa es esta:
+
+- Si existe `accounts/{uid}`, entra solo con `role: "admin"` y `active: true`. Un claim antiguo no reactiva una cuenta desactivada.
+- Si ese documento todavía no existe, sigue valiendo el custom claim `admin: true`.
+
+El único rol es `admin`. El servidor lo escribe; no acepta un rol enviado por el navegador.
+
+Endpoints de personal y registros, todos con `Authorization: Bearer <ID token>`:
 
 - `GET /api/admin/attendances`
 - `GET /api/admin/employees`
 - `POST /api/admin/employees` con `name`, `employeeCode` y `pin`
 - `POST /api/admin/employees/active` con `employeeId` y `active`
 
-`createEmployee` guarda el PIN solo como `pinHash`. Ninguna respuesta incluye `pin` ni `pinHash`. La pantalla de alta de personal todavía no está en la interfaz; estos endpoints conservan las funciones que ya existían.
+Endpoints de cuentas, con la misma autorización:
+
+- `GET /api/admin/session`
+- `GET /api/admin/accounts`
+- `POST /api/admin/accounts` con `name`, `email` y `password`
+- `POST /api/admin/accounts/active` con `uid` y `active`
+
+`POST /api/admin/accounts` crea el usuario en Firebase Authentication y después el documento `accounts/{uid}` con `name`, `email`, `role: "admin"`, `active: true`, `createdAt` y `updatedAt`. También conserva el claim `admin: true` para la transición. Si el documento no llega a guardarse, se elimina solo el usuario creado en esa petición. No se puede desactivar al último administrador activo.
+
+`createEmployee` guarda el PIN solo como `pinHash`. Ninguna respuesta incluye `pin`, `pinHash` ni la contraseña de una cuenta. El panel administrativo usa estos endpoints para listar, registrar y activar o desactivar personal. `GET /api/admin/employees` incluye `createdAt` en ISO cuando el documento ya tiene esa fecha; si no existe, el valor es `null`.
 
 ### Primera cuenta de administrador
 
 1. Crea el usuario en Firebase Console > Authentication > Add user.
 2. Descarga la clave de cuenta de servicio fuera del repositorio.
 3. Define `GOOGLE_APPLICATION_CREDENTIALS` con esa ruta.
-4. Ejecuta:
+4. Asigna el claim, sin quitar otros claims:
 
 ```bash
 npm install --no-save firebase-admin
 node scripts/set-admin.mjs admin@tuempresa.com
 ```
 
-5. Cierra sesión y vuelve a entrar para obtener un token con `admin: true`.
+5. Crea el documento `accounts/{uid}` de ese mismo usuario, sin crear otra cuenta y sin modificar `employees` ni `attendances`:
+
+```bash
+node scripts/bootstrap-admin-account.mjs --email admin@tuempresa.com --name "Nombre Apellido"
+```
+
+6. Cierra sesión y vuelve a entrar. A partir de ese documento, el acceso depende de `accounts`, no solo del claim.
+
+Estas dos órdenes escriben en Firebase. No forman parte del arranque automático del servidor.
 
 ## Reglas de Firestore
 
-El frontend actual solo usa Firebase Authentication. No lee ni escribe `employees` ni `attendances`.
+El frontend actual solo usa Firebase Authentication. No lee ni escribe `employees`, `attendances` ni `accounts`.
 
 Antes, `firestore.rules` permitía a un administrador autenticado leer y escribir `attendances` desde el navegador. El archivo ya deja ambas colecciones cerradas al cliente. **Ese cambio no está publicado.** Para aplicarlo, cuando el backend de Render ya esté funcionando:
 

@@ -5,13 +5,15 @@ import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
 import test from "node:test";
 import { createApp } from "../src/app.js";
+import { MemoryAuthDirectory, MemoryAccountStore, type MemoryAccount } from "../src/memory-accounts.js";
 import { MemoryDatabase } from "../src/memory-db.js";
 import { PUBLISHED_WEB_ORIGIN, resolveAllowedOrigins } from "../src/origins.js";
 import type { TokenVerifier } from "../src/types.js";
 
 const verifyToken: TokenVerifier = async (idToken: string) => {
-  if (idToken === "admin-token") return { uid: "admin-1", admin: true };
-  if (idToken === "staff-token") return { uid: "staff-1", admin: false };
+  if (idToken === "admin-token") return { uid: "admin-1", admin: true, email: "admin@example.com" };
+  if (idToken === "staff-token") return { uid: "staff-1", admin: false, email: "staff@example.com" };
+  if (idToken === "account-token") return { uid: "account-2", admin: false, email: "cuenta@example.com" };
   throw new Error("token inválido");
 };
 
@@ -299,6 +301,23 @@ test("los endpoints administrativos exigen el claim admin y no devuelven pinHash
     });
     assert.equal(disabled.status, 200);
     assert.equal(db.employees.find((employee) => employee.id === createdBody.id)?.active, false);
+
+    const listedAgain = await fetch(`${base}/api/admin/employees`, { headers: { authorization: "Bearer admin-token" } });
+    const listedAgainBody = await listedAgain.json();
+    const createdEmployee = listedAgainBody.employees.find((employee: { employeeCode?: string }) => employee.employeeCode === "VIC-020");
+    assert.equal(listedAgain.status, 200);
+    assert.equal(typeof createdEmployee.createdAt, "string");
+    assert.equal(JSON.stringify(listedAgainBody).includes("pinHash"), false);
+    assert.equal(JSON.stringify(listedAgainBody).includes("1234"), false);
+
+    const duplicate = await fetch(`${base}/api/admin/employees`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer admin-token" },
+      body: JSON.stringify({ name: "Mario Quispe", employeeCode: "VIC-020", pin: "5678" }),
+    });
+    assert.equal(duplicate.status, 409);
+    assert.equal((await duplicate.json()).message, "Ese código de trabajador ya existe.");
+    assert.equal(db.employees.filter((employee) => employee.employeeCode === "VIC-020").length, 1);
   } finally {
     server.close();
   }
@@ -374,12 +393,202 @@ test("una escritura fallida no confirma la marcación", async () => {
 });
 
 test("el frontend no escribe asistencias ni llama Cloud Functions", () => {
-  const appSource = readFileSync(resolve(process.cwd(), "../src/App.tsx"), "utf8");
-  const firebaseSource = readFileSync(resolve(process.cwd(), "../src/firebase.ts"), "utf8");
-  const combined = `${appSource}\n${firebaseSource}`;
+  const files = ["../src/App.tsx", "../src/firebase.ts", "../src/AdminDashboard.tsx", "../src/AccountsPanel.tsx", "../src/StaffPanel.tsx"];
+  const combined = files.map((file) => readFileSync(resolve(process.cwd(), file), "utf8")).join("\n");
   for (const forbidden of ["addDoc", "setDoc", "updateDoc", "deleteDoc", "writeBatch", "httpsCallable", "getFirestore", "collection("]) {
     assert.equal(combined.includes(forbidden), false, forbidden);
   }
+  const appSource = readFileSync(resolve(process.cwd(), "../src/App.tsx"), "utf8");
+  const firebaseSource = readFileSync(resolve(process.cwd(), "../src/firebase.ts"), "utf8");
   assert.equal(appSource.includes("/api/attendance"), true);
+  assert.equal(appSource.includes("/api/admin/session"), true);
   assert.equal(firebaseSource.includes("VITE_API_BASE_URL"), true);
+});
+
+const accountNow = new Date("2026-10-11T18:00:00.000Z");
+const accountPassword = "clave-secreta-99";
+
+function sampleAccount(uid: string, name: string, email: string, active = true, role = "admin"): MemoryAccount {
+  return { uid, name, email, role, active, createdAt: accountNow, updatedAt: accountNow };
+}
+
+function accountsApp(db: MemoryDatabase, store: MemoryAccountStore, directory: MemoryAuthDirectory | null = null) {
+  return createApp({
+    database: db,
+    verifyToken,
+    accounts: store,
+    authDirectory: directory,
+    allowedOrigins: ["http://localhost:5174"],
+    now: () => accountNow,
+  });
+}
+
+test("accounts autoriza por documento o, si no existe, por el claim", async () => {
+  const db = new MemoryDatabase();
+  db.employees.push({ id: "ana-1", name: "Ana López", employeeCode: "VIC-001", active: true, pinHash: "hash-privado" });
+  const store = new MemoryAccountStore();
+  const { server, base } = await listen(accountsApp(db, store));
+  try {
+    const anonymous = await fetch(`${base}/api/admin/session`);
+    assert.equal(anonymous.status, 401);
+
+    const legacy = await fetch(`${base}/api/admin/session`, { headers: { authorization: "Bearer admin-token" } });
+    assert.equal(legacy.status, 200);
+    assert.deepEqual(await legacy.json(), {
+      uid: "admin-1",
+      name: null,
+      email: "admin@example.com",
+      role: "admin",
+      active: true,
+      source: "claim",
+    });
+
+    store.accounts.push(sampleAccount("account-2", "Cuenta Nueva", "cuenta@example.com"));
+    const byAccount = await fetch(`${base}/api/admin/employees`, { headers: { authorization: "Bearer account-token" } });
+    assert.equal(byAccount.status, 200);
+
+    store.accounts.push(sampleAccount("admin-1", "Admin Actual", "admin@example.com", false));
+    const inactive = await fetch(`${base}/api/admin/attendances`, { headers: { authorization: "Bearer admin-token" } });
+    assert.equal(inactive.status, 403);
+
+    store.accounts[1].active = true;
+    store.accounts[1].role = "employee";
+    const wrongRole = await fetch(`${base}/api/admin/employees`, { headers: { authorization: "Bearer admin-token" } });
+    assert.equal(wrongRole.status, 403);
+
+    const marked = await postAttendance(base, { name: "Ana López", action: "entrada" });
+    assert.equal(marked.status, 200);
+    assert.equal(marked.body.action, "entrada");
+    assert.equal(db.attendances.length, 1);
+    assert.equal(db.employees[0].pinHash, "hash-privado");
+  } finally {
+    server.close();
+  }
+});
+
+test("la alta de cuentas no guarda contraseñas ni toca employees o attendances", async () => {
+  const db = new MemoryDatabase();
+  db.employees.push({ id: "ana-1", name: "Ana López", employeeCode: "VIC-001", active: true, pinHash: "hash-privado" });
+  db.attendances.push({
+    id: "att-1",
+    employeeId: "ana-1",
+    employeeCode: "VIC-001",
+    employeeName: "Ana López",
+    status: "open",
+    checkInAt: accountNow,
+    createdAt: accountNow,
+  });
+  const employeesBefore = structuredClone(db.employees);
+  const attendancesBefore = structuredClone(db.attendances);
+  const store = new MemoryAccountStore();
+  const directory = new MemoryAuthDirectory();
+  directory.users.push({ uid: "previo", email: "previo@example.com", password: "otra-clave", claims: { locale: "es" } });
+  await directory.setAdminClaim("previo");
+  const { server, base } = await listen(accountsApp(db, store, directory));
+  const headers = { "content-type": "application/json", authorization: "Bearer admin-token" };
+  try {
+    const denied = await fetch(`${base}/api/admin/accounts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer staff-token" },
+      body: JSON.stringify({ name: "Otra Persona", email: "otra@example.com", password: accountPassword, role: "admin" }),
+    });
+    assert.equal(denied.status, 403);
+    assert.equal(store.accounts.length, 0);
+    assert.equal(directory.users.length, 1);
+
+    const created = await fetch(`${base}/api/admin/accounts`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: "  Nueva   Admin ",
+        email: "Nueva@Example.com",
+        password: accountPassword,
+        role: "employee",
+        active: false,
+      }),
+    });
+    const body = await created.json();
+    assert.equal(created.status, 201);
+    assert.equal(body.role, "admin");
+    assert.equal(body.active, true);
+    assert.equal(body.email, "nueva@example.com");
+    assert.equal(body.name, "Nueva Admin");
+    assert.equal(JSON.stringify(body).includes(accountPassword), false);
+    assert.equal(JSON.stringify(store.accounts).includes(accountPassword), false);
+    assert.deepEqual(Object.keys(store.accounts[0]).sort(), ["active", "createdAt", "email", "name", "role", "uid", "updatedAt"]);
+    const createdUser = directory.users.find((user) => user.email === "nueva@example.com");
+    assert.equal(createdUser?.password, accountPassword);
+    assert.equal(createdUser?.claims.admin, true);
+    assert.deepEqual(directory.users[0].claims, { locale: "es", admin: true });
+
+    const duplicate = await fetch(`${base}/api/admin/accounts`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "Repetida", email: "nueva@example.com", password: accountPassword }),
+    });
+    assert.equal(duplicate.status, 409);
+    assert.equal(directory.users.filter((user) => user.email === "nueva@example.com").length, 1);
+
+    store.failCreateMessage = "fallo interno de prueba";
+    const rolledBack = await fetch(`${base}/api/admin/accounts`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "Rollback Admin", email: "rollback@example.com", password: accountPassword }),
+    });
+    const rolledBody = await rolledBack.json();
+    assert.equal(rolledBack.status, 503);
+    assert.equal(JSON.stringify(rolledBody).includes("fallo interno"), false);
+    assert.equal(JSON.stringify(rolledBody).includes(accountPassword), false);
+    assert.equal(directory.users.some((user) => user.email === "rollback@example.com"), false);
+    assert.equal(store.accounts.some((account) => account.email === "rollback@example.com"), false);
+
+    assert.deepEqual(db.employees, employeesBefore);
+    assert.deepEqual(db.attendances, attendancesBefore);
+  } finally {
+    server.close();
+  }
+});
+
+test("no se puede desactivar al último administrador activo", async () => {
+  const db = new MemoryDatabase();
+  const store = new MemoryAccountStore();
+  store.accounts.push(
+    sampleAccount("admin-a", "Ana Admin", "ana.admin@example.com"),
+    sampleAccount("admin-b", "Beto Admin", "beto.admin@example.com"),
+  );
+  const directory = new MemoryAuthDirectory();
+  const { server, base } = await listen(accountsApp(db, store, directory));
+  const headers = { "content-type": "application/json", authorization: "Bearer admin-token" };
+  try {
+    const responses = await Promise.all([
+      fetch(`${base}/api/admin/accounts/active`, { method: "POST", headers, body: JSON.stringify({ uid: "admin-a", active: false, role: "employee" }) }),
+      fetch(`${base}/api/admin/accounts/active`, { method: "POST", headers, body: JSON.stringify({ uid: "admin-b", active: false }) }),
+    ]);
+    const statuses = responses.map((response) => response.status).sort();
+    assert.deepEqual(statuses, [200, 409]);
+    assert.equal(store.accounts.filter((account) => account.active).length, 1);
+    assert.equal(store.accounts.every((account) => account.role === "admin"), true);
+
+    const remaining = store.accounts.find((account) => account.active);
+    assert.ok(remaining);
+    const blocked = await fetch(`${base}/api/admin/accounts/active`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ uid: remaining.uid, active: false }),
+    });
+    assert.equal(blocked.status, 409);
+    assert.equal((await blocked.json()).message, "Debe quedar al menos un administrador activo.");
+    assert.equal(store.accounts.find((account) => account.uid === remaining.uid)?.active, true);
+    assert.equal(db.employees.length, 0);
+    assert.equal(db.attendances.length, 0);
+  } finally {
+    server.close();
+  }
+});
+
+test("el almacén de cuentas no referencia employees ni attendances", () => {
+  const source = readFileSync(resolve(process.cwd(), "src/accounts.ts"), "utf8");
+  assert.equal(source.includes("employees"), false);
+  assert.equal(source.includes("attendances"), false);
+  assert.equal(source.includes('collection("accounts")'), true);
 });

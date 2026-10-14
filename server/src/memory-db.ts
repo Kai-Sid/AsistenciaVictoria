@@ -7,6 +7,7 @@ import type {
   AttendanceTx,
   AttendanceView,
   EmployeePublic,
+  EmployeeRecord,
 } from "./types.js";
 
 type StoredEmployee = EmployeePublic & { pinHash?: string; createdAt?: Date; updatedAt?: Date };
@@ -58,9 +59,15 @@ export class MemoryDatabase implements AttendanceDatabase, AdminDatabase {
     return { id: employee.id, name: employee.name, employeeCode: employee.employeeCode, active: true };
   }
 
-  async listEmployees(): Promise<EmployeePublic[]> {
+  async listEmployees(): Promise<EmployeeRecord[]> {
     return this.employees
-      .map(({ id, name, employeeCode, active }) => ({ id, name, employeeCode, active }))
+      .map(({ id, name, employeeCode, active, createdAt }) => ({
+        id,
+        name,
+        employeeCode,
+        active,
+        createdAt: createdAt ? createdAt.toISOString() : null,
+      }))
       .sort((a, b) => a.name.localeCompare(b.name, "es"));
   }
 

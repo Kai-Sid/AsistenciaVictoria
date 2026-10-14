@@ -8,6 +8,7 @@ import type {
   AttendanceTx,
   AttendanceView,
   EmployeePublic,
+  EmployeeRecord,
 } from "./types.js";
 
 function asDate(value: unknown): Date | null {
@@ -108,13 +109,14 @@ export class FirestoreDatabase implements AttendanceDatabase, AdminDatabase {
     return { id: ref.id, name: input.name, employeeCode: input.employeeCode, active: true };
   }
 
-  async listEmployees(): Promise<EmployeePublic[]> {
+  async listEmployees(): Promise<EmployeeRecord[]> {
     const snap = await this.db.collection("employees").orderBy("name").get();
     return snap.docs.map((doc) => ({
       id: doc.id,
       name: String(doc.get("name") ?? ""),
       employeeCode: String(doc.get("employeeCode") ?? ""),
       active: doc.get("active") === true,
+      createdAt: asDate(doc.get("createdAt"))?.toISOString() ?? null,
     }));
   }
 

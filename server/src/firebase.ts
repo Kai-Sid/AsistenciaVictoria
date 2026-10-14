@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { applicationDefault, cert, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
+import { FirebaseAuthDirectory, FirestoreAccountStore } from "./accounts.js";
 import { FirestoreDatabase } from "./firestore-db.js";
 import type { TokenVerifier } from "./types.js";
 
@@ -25,6 +26,8 @@ type ServiceAccount = {
 
 export type FirebaseServices = {
   database: FirestoreDatabase;
+  accounts: FirestoreAccountStore;
+  authDirectory: FirebaseAuthDirectory;
   verifyToken: TokenVerifier;
   projectId: string;
 };
@@ -104,12 +107,19 @@ export function initFirebase(): FirebaseServices {
         });
   }
   const auth = getAuth();
+  const firestore = getFirestore();
   return {
     projectId,
-    database: new FirestoreDatabase(getFirestore()),
+    database: new FirestoreDatabase(firestore),
+    accounts: new FirestoreAccountStore(firestore),
+    authDirectory: new FirebaseAuthDirectory(auth),
     verifyToken: async (idToken: string) => {
       const decoded = await auth.verifyIdToken(idToken);
-      return { uid: decoded.uid, admin: decoded.admin === true };
+      return {
+        uid: decoded.uid,
+        admin: decoded.admin === true,
+        email: typeof decoded.email === "string" ? decoded.email : null,
+      };
     },
   };
 }

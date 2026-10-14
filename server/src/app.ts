@@ -3,7 +3,7 @@ import { parseAttendanceInput, recordAttendance } from "./attendance.js";
 import { HttpError } from "./http-error.js";
 import { createRateLimiter } from "./rate-limit.js";
 import type { FirestoreReadiness } from "./firebase.js";
-import type { AdminDatabase, AttendanceDatabase, TokenVerifier } from "./types.js";
+import type { AccountRecord, AccountStore, AdminDatabase, AttendanceDatabase, AuthDirectory, TokenVerifier } from "./types.js";
 
 const NOT_CONFIGURED = "El servidor no está configurado para acceder a Firestore.";
 const ADMIN_DENIED = "Se requiere permiso de administrador.";
@@ -11,10 +11,18 @@ const ADMIN_DENIED = "Se requiere permiso de administrador.";
 export type AppOptions = {
   database: (AttendanceDatabase & AdminDatabase) | null;
   verifyToken: TokenVerifier | null;
+  accounts?: AccountStore | null;
+  authDirectory?: AuthDirectory | null;
   allowedOrigins: string[];
   firestoreStatus?: FirestoreReadiness;
   now?: () => Date;
   attendanceRateLimit?: { max: number; windowMs: number };
+};
+
+type AdminAccess = {
+  uid: string;
+  email: string | null;
+  account: AccountRecord | null;
 };
 
 function cors(allowed: Set<string>) {
@@ -35,18 +43,35 @@ function cors(allowed: Set<string>) {
   };
 }
 
-async function requireAdmin(req: Request, verifyToken: TokenVerifier | null): Promise<void> {
+async function requireAdmin(req: Request, verifyToken: TokenVerifier | null, accounts: AccountStore | null): Promise<AdminAccess> {
   if (!verifyToken) throw new HttpError(503, NOT_CONFIGURED);
   const header = req.header("authorization") ?? "";
   const match = /^Bearer\s+(\S+)$/i.exec(header);
   if (!match) throw new HttpError(401, ADMIN_DENIED);
+  let token;
   try {
-    const token = await verifyToken(match[1]);
-    if (token.admin !== true) throw new HttpError(403, ADMIN_DENIED);
-  } catch (error) {
-    if (error instanceof HttpError) throw error;
+    token = await verifyToken(match[1]);
+  } catch {
     throw new HttpError(401, ADMIN_DENIED);
   }
+  if (!accounts) {
+    if (token.admin !== true) throw new HttpError(403, ADMIN_DENIED);
+    return { uid: token.uid, email: token.email, account: null };
+  }
+  let account: AccountRecord | null;
+  try {
+    account = await accounts.get(token.uid);
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(503, NOT_CONFIGURED);
+  }
+  // El documento manda cuando existe. El claim solo cubre a quien todavía no tiene accounts/{uid}.
+  if (account) {
+    if (account.role !== "admin" || account.active !== true) throw new HttpError(403, ADMIN_DENIED);
+    return { uid: token.uid, email: account.email || token.email, account };
+  }
+  if (token.admin === true) return { uid: token.uid, email: token.email, account: null };
+  throw new HttpError(403, ADMIN_DENIED);
 }
 
 function parseCreateEmployee(body: unknown): { name: string; employeeCode: string; pin: string } {
@@ -61,6 +86,88 @@ function parseCreateEmployee(body: unknown): { name: string; employeeCode: strin
     throw new HttpError(400, "Nombre, código o PIN no válidos. El PIN debe tener de 4 a 8 dígitos.");
   }
   return { name, employeeCode, pin };
+}
+
+function parseCreateAccount(body: unknown): { name: string; email: string; password: string } {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new HttpError(400, "La solicitud no es válida.");
+  }
+  const record = body as { name?: unknown; email?: unknown; password?: unknown };
+  const name = String(record.name ?? "").trim().replace(/\s+/g, " ");
+  const email = String(record.email ?? "").trim().toLowerCase();
+  const password = typeof record.password === "string" ? record.password : "";
+  if (name.length < 2 || name.length > 100) throw new HttpError(400, "El nombre debe tener entre 2 y 100 caracteres.");
+  if (email.length > 200 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, "El correo no es válido.");
+  if (password.length < 8 || password.length > 128) throw new HttpError(400, "La contraseña debe tener entre 8 y 128 caracteres.");
+  return { name, email, password };
+}
+
+function parseAccountActive(body: unknown): { uid: string; active: boolean } {
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "Datos no válidos.");
+  const record = body as { uid?: unknown; active?: unknown };
+  const uid = String(record.uid ?? "").trim();
+  if (!uid || uid.includes("/") || uid.length > 128 || typeof record.active !== "boolean") {
+    throw new HttpError(400, "Datos no válidos.");
+  }
+  return { uid, active: record.active };
+}
+
+function publicAccount(account: AccountRecord) {
+  return {
+    uid: account.uid,
+    name: account.name,
+    email: account.email,
+    role: account.role,
+    active: account.active,
+    createdAt: account.createdAt,
+    updatedAt: account.updatedAt,
+  };
+}
+
+function authErrorCode(error: unknown): string {
+  if (!error || typeof error !== "object" || !("code" in error)) return "";
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && /^[a-z0-9/_-]+$/i.test(code) ? code : "";
+}
+
+async function registerAdminAccount(
+  accounts: AccountStore,
+  directory: AuthDirectory,
+  input: { name: string; email: string; password: string },
+  now: Date,
+): Promise<AccountRecord> {
+  let created: { uid: string; email: string } | null = null;
+  try {
+    created = await directory.createUser(input);
+    const account = await accounts.create({
+      uid: created.uid,
+      name: input.name,
+      email: created.email.trim().toLowerCase(),
+      now,
+    });
+    try {
+      await directory.setAdminClaim(created.uid);
+    } catch {
+      console.error("No se pudo conservar el claim admin de la cuenta nueva.");
+    }
+    return account;
+  } catch (error) {
+    if (created) {
+      try {
+        await directory.deleteUser(created.uid);
+      } catch {
+        console.error("No se pudo eliminar el usuario de Authentication creado en esta solicitud.");
+      }
+    }
+    if (error instanceof HttpError) throw error;
+    const code = authErrorCode(error);
+    if (code === "auth/email-already-exists" || code === "auth/email-already-in-use") {
+      throw new HttpError(409, "Ya existe una cuenta con ese correo.");
+    }
+    if (code === "auth/invalid-email") throw new HttpError(400, "El correo no es válido.");
+    if (code === "auth/invalid-password") throw new HttpError(400, "La contraseña debe tener entre 8 y 128 caracteres.");
+    throw new HttpError(503, "No se pudo registrar la cuenta administrativa.");
+  }
 }
 
 function parseActive(body: unknown): { employeeId: string; active: boolean } {
@@ -120,7 +227,7 @@ export function createApp(options: AppOptions) {
   app.get("/api/admin/employees", async (req, res, next) => {
     try {
       if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
-      await requireAdmin(req, options.verifyToken);
+      await requireAdmin(req, options.verifyToken, options.accounts ?? null);
       if (!options.database) throw new HttpError(503, NOT_CONFIGURED);
       res.json({ employees: await options.database.listEmployees() });
     } catch (error) {
@@ -131,7 +238,7 @@ export function createApp(options: AppOptions) {
   app.post("/api/admin/employees", async (req, res, next) => {
     try {
       if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
-      await requireAdmin(req, options.verifyToken);
+      await requireAdmin(req, options.verifyToken, options.accounts ?? null);
       if (!options.database) throw new HttpError(503, NOT_CONFIGURED);
       const input = parseCreateEmployee(req.body);
       const employee = await options.database.createEmployee(input);
@@ -144,7 +251,7 @@ export function createApp(options: AppOptions) {
   app.post("/api/admin/employees/active", async (req, res, next) => {
     try {
       if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
-      await requireAdmin(req, options.verifyToken);
+      await requireAdmin(req, options.verifyToken, options.accounts ?? null);
       if (!options.database) throw new HttpError(503, NOT_CONFIGURED);
       const input = parseActive(req.body);
       res.json(await options.database.setEmployeeActive(input.employeeId, input.active));
@@ -156,9 +263,67 @@ export function createApp(options: AppOptions) {
   app.get("/api/admin/attendances", async (req, res, next) => {
     try {
       if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
-      await requireAdmin(req, options.verifyToken);
+      await requireAdmin(req, options.verifyToken, options.accounts ?? null);
       if (!options.database) throw new HttpError(503, NOT_CONFIGURED);
       res.json({ attendances: await options.database.listAttendances() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/admin/session", async (req, res, next) => {
+    try {
+      if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
+      const access = await requireAdmin(req, options.verifyToken, options.accounts ?? null);
+      res.json({
+        uid: access.uid,
+        name: access.account?.name ?? null,
+        email: access.account?.email ?? access.email,
+        role: "admin",
+        active: true,
+        source: access.account ? "account" : "claim",
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/admin/accounts", async (req, res, next) => {
+    try {
+      if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
+      await requireAdmin(req, options.verifyToken, options.accounts ?? null);
+      if (!options.accounts) throw new HttpError(503, NOT_CONFIGURED);
+      const accounts = await options.accounts.list();
+      res.json({ accounts: accounts.map(publicAccount) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/admin/accounts", async (req, res, next) => {
+    try {
+      if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
+      await requireAdmin(req, options.verifyToken, options.accounts ?? null);
+      if (!options.accounts || !options.authDirectory) throw new HttpError(503, NOT_CONFIGURED);
+      const input = parseCreateAccount(req.body);
+      const known = await options.accounts.list();
+      if (known.some((account) => account.email.toLowerCase() === input.email)) {
+        throw new HttpError(409, "Ya existe una cuenta con ese correo.");
+      }
+      const account = await registerAdminAccount(options.accounts, options.authDirectory, input, now());
+      res.status(201).json(publicAccount(account));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/admin/accounts/active", async (req, res, next) => {
+    try {
+      if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
+      await requireAdmin(req, options.verifyToken, options.accounts ?? null);
+      if (!options.accounts) throw new HttpError(503, NOT_CONFIGURED);
+      const input = parseAccountActive(req.body);
+      res.json(publicAccount(await options.accounts.setActive(input.uid, input.active, now())));
     } catch (error) {
       next(error);
     }

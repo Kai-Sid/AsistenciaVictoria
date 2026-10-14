@@ -5,6 +5,10 @@ export type EmployeePublic = {
   active: boolean;
 };
 
+export type EmployeeRecord = EmployeePublic & {
+  createdAt: string | null;
+};
+
 export type EmployeeMatch = {
   id: string;
   name: string;
@@ -55,13 +59,36 @@ export type AttendanceDatabase = {
 
 export type AdminDatabase = {
   createEmployee(input: { name: string; employeeCode: string; pin: string }): Promise<EmployeePublic>;
-  listEmployees(): Promise<EmployeePublic[]>;
+  listEmployees(): Promise<EmployeeRecord[]>;
   listAttendances(): Promise<AttendanceView[]>;
   setEmployeeActive(employeeId: string, active: boolean): Promise<{ ok: true }>;
 };
 
-export type TokenCheck = { uid: string; admin: boolean };
+export type TokenCheck = { uid: string; admin: boolean; email: string | null };
 export type TokenVerifier = (idToken: string) => Promise<TokenCheck>;
+
+export type AccountRecord = {
+  uid: string;
+  name: string;
+  email: string;
+  role: string;
+  active: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+export type AccountStore = {
+  get(uid: string): Promise<AccountRecord | null>;
+  list(): Promise<AccountRecord[]>;
+  create(input: { uid: string; name: string; email: string; now: Date }): Promise<AccountRecord>;
+  setActive(uid: string, active: boolean, now: Date): Promise<AccountRecord>;
+};
+
+export type AuthDirectory = {
+  createUser(input: { name: string; email: string; password: string }): Promise<{ uid: string; email: string }>;
+  deleteUser(uid: string): Promise<void>;
+  setAdminClaim(uid: string): Promise<void>;
+};
 
 export type AttendanceSuccess = {
   ok: true;
