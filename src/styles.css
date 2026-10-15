@@ -1026,6 +1026,78 @@ button:disabled { cursor: not-allowed; }
 
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
 
+.row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.week-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.week-switch strong {
+  color: var(--gold-soft);
+  font-family: 'Playfair Display', serif;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.settlement-modal {
+  width: min(100%, 760px);
+  max-height: min(92vh, 860px);
+  overflow: auto;
+}
+
+.settlement-modal h3 {
+  margin: 18px 0 8px;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.settlement-facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 16px;
+  margin-top: 16px;
+}
+
+.settlement-facts div { display: grid; gap: 2px; }
+.settlement-facts span { color: var(--text-muted); font-size: 12px; }
+.settlement-facts strong { color: var(--text); font-size: 16px; }
+
+.settlement-modal .table-container { margin-top: 8px; }
+.settlement-modal table { min-width: 420px; }
+
+.exclusion-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+}
+
+.exclusion-list li + li { margin-top: 6px; }
+
+.status.pending,
+.status.missing-rate,
+.status.confirmed { border: 1px solid transparent; }
+
+.status.pending {
+  color: var(--gold-soft);
+  background: rgba(242, 213, 138, 0.12);
+  border-color: rgba(242, 213, 138, 0.35);
+}
+
+.status.confirmed {
+  color: var(--success);
+  background: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.4);
+}
+
+.status.missing-rate {
+  color: var(--error);
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -1138,6 +1210,9 @@ select:focus-visible {
   .record-count { margin: 0; padding-bottom: 0; }
   .admin-app select { width: 100%; }
   .card-head { align-items: stretch; flex-direction: column; }
+  .week-switch { align-items: stretch; }
+  .week-switch strong { font-size: 18px; }
+  .settlement-facts { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 700px) {

@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/src/index.js",
-    "test": "npm run build && node --test dist/test/api.test.js dist/test/firebase-config.test.js"
+    "test": "npm run build && node --test dist/test/api.test.js dist/test/firebase-config.test.js dist/test/settlements.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

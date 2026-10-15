@@ -1,4 +1,5 @@
 import { HttpError } from "./http-error.js";
+import { settlementDocumentId } from "./settlements.js";
 import type {
   AdminDatabase,
   AttendanceDatabase,
@@ -7,15 +8,31 @@ import type {
   AttendanceView,
   EmployeePublic,
   EmployeeRecord,
+  WeeklyPaymentRecord,
 } from "./types.js";
 
-type StoredEmployee = EmployeePublic & { pinHash?: string; createdAt?: Date; updatedAt?: Date };
+type StoredEmployee = EmployeePublic & {
+  pinHash?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+  hourlyRate?: number;
+  yapePhone?: string;
+};
+
+type PaymentDraft = Parameters<AdminDatabase["saveWeeklyPayment"]>[0];
 
 export class MemoryDatabase implements AttendanceDatabase, AdminDatabase {
   employees: StoredEmployee[] = [];
   attendances: AttendanceDoc[] = [];
+  weeklyPayments: WeeklyPaymentRecord[] = [];
   private queue: Promise<void> = Promise.resolve();
   private sequence = 0;
+
+  private enqueue<T>(work: () => Promise<T> | T): Promise<T> {
+    const run = this.queue.then(work, work);
+    this.queue = run.then(() => undefined, () => undefined);
+    return run;
+  }
 
   listActiveEmployees(): Promise<EmployeePublic[]> {
     return Promise.resolve(
@@ -58,13 +75,7 @@ export class MemoryDatabase implements AttendanceDatabase, AdminDatabase {
 
   async listEmployees(): Promise<EmployeeRecord[]> {
     return this.employees
-      .map(({ id, name, employeeCode, active, createdAt }) => ({
-        id,
-        name,
-        employeeCode,
-        active,
-        createdAt: createdAt ? createdAt.toISOString() : null,
-      }))
+      .map((employee) => this.toEmployeeRecord(employee))
       .sort((a, b) => a.name.localeCompare(b.name, "es"));
   }
 
@@ -90,6 +101,70 @@ export class MemoryDatabase implements AttendanceDatabase, AdminDatabase {
     employee.active = active;
     employee.updatedAt = new Date();
     return { ok: true };
+  }
+
+  async updateEmployeePay(employeeId: string, input: { hourlyRate: number; yapePhone: string | null }): Promise<EmployeeRecord> {
+    const employee = this.employees.find((item) => item.id === employeeId);
+    if (!employee) throw new HttpError(404, "No encontramos ese trabajador.");
+    employee.hourlyRate = input.hourlyRate;
+    if (input.yapePhone) employee.yapePhone = input.yapePhone;
+    else delete employee.yapePhone;
+    employee.updatedAt = new Date();
+    return this.toEmployeeRecord(employee);
+  }
+
+  async listSettlementAttendances(from: Date, to: Date): Promise<AttendanceDoc[]> {
+    return this.attendances
+      .filter((attendance) => {
+        const checkIn = attendance.checkInAt?.getTime();
+        return typeof checkIn === "number" && Number.isFinite(checkIn) && checkIn >= from.getTime() && checkIn < to.getTime();
+      })
+      .map((attendance) => ({ ...attendance }));
+  }
+
+  async listWeeklyPayments(weekStart: string): Promise<WeeklyPaymentRecord[]> {
+    return this.weeklyPayments
+      .filter((payment) => payment.weekStart === weekStart)
+      .map((payment) => ({ ...payment, shifts: payment.shifts.map((shift) => ({ ...shift })) }));
+  }
+
+  saveWeeklyPayment(draft: PaymentDraft, now: Date): Promise<{ payment: WeeklyPaymentRecord; created: boolean }> {
+    return this.enqueue(() => {
+      const id = settlementDocumentId(draft.employeeId, draft.weekStart);
+      const existing = this.weeklyPayments.find((payment) => payment.id === id);
+      if (existing) return { payment: { ...existing, shifts: existing.shifts.map((shift) => ({ ...shift })) }, created: false };
+      const payment: WeeklyPaymentRecord = {
+        id,
+        employeeId: draft.employeeId,
+        employeeCode: draft.employeeCode,
+        employeeName: draft.employeeName,
+        weekStart: draft.weekStart,
+        weekEnd: draft.weekEnd,
+        totalMinutes: draft.totalMinutes,
+        hourlyRate: draft.hourlyRate,
+        amount: draft.amount,
+        currency: "PEN",
+        status: "confirmed",
+        yapePhone: draft.yapePhone,
+        shifts: draft.shifts.map((shift) => ({ ...shift })),
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      };
+      this.weeklyPayments.push(payment);
+      return { payment: { ...payment, shifts: payment.shifts.map((shift) => ({ ...shift })) }, created: true };
+    });
+  }
+
+  private toEmployeeRecord(employee: StoredEmployee): EmployeeRecord {
+    return {
+      id: employee.id,
+      name: employee.name,
+      employeeCode: employee.employeeCode,
+      active: employee.active,
+      createdAt: employee.createdAt ? employee.createdAt.toISOString() : null,
+      hourlyRate: typeof employee.hourlyRate === "number" ? employee.hourlyRate : null,
+      yapePhone: employee.yapePhone ?? null,
+    };
   }
 }
 
@@ -149,7 +224,15 @@ class MemoryTx implements AttendanceTx {
   }
 
   commit(): void {
-    this.db.employees = this.employees.map((employee) => ({ ...employee }));
+    const live = new Map(this.db.employees.map((employee) => [employee.id, employee]));
+    this.db.employees = this.employees.map((employee) => {
+      const current = live.get(employee.id);
+      return {
+        ...employee,
+        hourlyRate: current?.hourlyRate,
+        yapePhone: current?.yapePhone,
+      };
+    });
     this.db.attendances = this.attendances.map((attendance) => ({ ...attendance }));
   }
 }

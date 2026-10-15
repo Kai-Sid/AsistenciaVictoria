@@ -8,6 +8,8 @@ type Employee = {
   employeeCode: string;
   active: boolean;
   createdAt: string | null;
+  hourlyRate: number | null;
+  yapePhone: string | null;
 };
 
 type Notice = { type: "success" | "error"; text: string };
@@ -34,7 +36,19 @@ function readEmployee(value: unknown): Employee | null {
     employeeCode,
     active: record.active === true,
     createdAt: typeof record.createdAt === "string" && record.createdAt ? record.createdAt : null,
+    hourlyRate: typeof record.hourlyRate === "number" && Number.isFinite(record.hourlyRate) ? record.hourlyRate : null,
+    yapePhone: typeof record.yapePhone === "string" && record.yapePhone ? record.yapePhone : null,
   };
+}
+
+function formatRate(value: number | null) {
+  if (value == null) return "Sin tarifa";
+  return new Intl.NumberFormat("es-PE", { style: "currency", currency: "PEN" }).format(value);
+}
+
+function formatPhone(value: string | null) {
+  if (!value) return "—";
+  return value.replace(/(\d{3})(\d{3})(\d{3})/, "$1 $2 $3");
 }
 
 async function readBody(response: Response): Promise<{ message?: string; employees?: unknown } | null> {
@@ -63,6 +77,9 @@ export default function StaffPanel() {
   const [name, setName] = useState("");
   const [employeeCode, setEmployeeCode] = useState("");
   const [deactivateTarget, setDeactivateTarget] = useState<Employee | null>(null);
+  const [payTarget, setPayTarget] = useState<Employee | null>(null);
+  const [rateInput, setRateInput] = useState("");
+  const [phoneInput, setPhoneInput] = useState("");
   const [dialogError, setDialogError] = useState("");
   const cancelRef = useRef<HTMLButtonElement>(null);
 
@@ -71,14 +88,17 @@ export default function StaffPanel() {
   }, []);
 
   useEffect(() => {
-    if (!deactivateTarget) return;
+    if (!deactivateTarget && !payTarget) return;
     cancelRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !pendingId) setDeactivateTarget(null);
+      if (event.key === "Escape" && !pendingId) {
+        setDeactivateTarget(null);
+        setPayTarget(null);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [deactivateTarget, pendingId]);
+  }, [deactivateTarget, payTarget, pendingId]);
 
   async function authorized(path: string, init?: RequestInit) {
     const user = auth.currentUser;
@@ -198,6 +218,45 @@ export default function StaffPanel() {
     }
   }
 
+  function openPay(employee: Employee) {
+    setDialogError("");
+    setRateInput(employee.hourlyRate == null ? "" : String(employee.hourlyRate));
+    setPhoneInput(employee.yapePhone ?? "");
+    setPayTarget(employee);
+  }
+
+  async function savePay(event: FormEvent) {
+    event.preventDefault();
+    if (!payTarget) return;
+    const hourlyRate = Number(rateInput.trim().replace(",", "."));
+    const cents = Math.round(hourlyRate * 100);
+    if (!Number.isFinite(hourlyRate) || cents <= 0 || cents > 999999 || Math.abs(hourlyRate * 100 - cents) > 1e-6) {
+      setDialogError("La tarifa debe ser mayor que cero, con dos decimales como máximo.");
+      return;
+    }
+    setPendingId(payTarget.id);
+    setDialogError("");
+    try {
+      const response = await authorized("/api/admin/employees/pay", {
+        method: "POST",
+        body: JSON.stringify({ employeeId: payTarget.id, hourlyRate, yapePhone: phoneInput.trim() }),
+      });
+      const data = await readBody(response);
+      if (!response.ok) {
+        setDialogError(data?.message || "No se pudo guardar la tarifa.");
+        return;
+      }
+      setPayTarget(null);
+      setNotice({ type: "success", text: "Tarifa y celular actualizados." });
+      await loadEmployees(true);
+    } catch (error) {
+      console.error(error instanceof Error ? error.name : "error");
+      setDialogError(networkMessage(error, "No se pudo guardar la tarifa."));
+    } finally {
+      setPendingId(null);
+    }
+  }
+
   const visible = employees.filter((employee) => `${employee.name} ${employee.employeeCode}`.toLowerCase().includes(query.toLowerCase()));
   const busy = loading || saving || pendingId !== null;
 
@@ -266,6 +325,8 @@ export default function StaffPanel() {
                       <th scope="col">Nombre</th>
                       <th scope="col">Código</th>
                       <th scope="col">Estado</th>
+                      <th scope="col">Tarifa</th>
+                      <th scope="col">Yape</th>
                       <th scope="col">Registro</th>
                       <th scope="col">Acción</th>
                     </tr>
@@ -281,18 +342,25 @@ export default function StaffPanel() {
                             {employee.active ? "Activo" : "Inactivo"}
                           </span>
                         </td>
+                        <td>{formatRate(employee.hourlyRate)}</td>
+                        <td>{formatPhone(employee.yapePhone)}</td>
                         <td>{formatCreated(employee.createdAt)}</td>
                         <td>
-                          {employee.active ? (
-                            <button className="btn btn-secondary" type="button" disabled={busy} onClick={() => { setDialogError(""); setDeactivateTarget(employee); }}>
-                              Desactivar
+                          <div className="row-actions">
+                            <button className="btn btn-secondary" type="button" disabled={busy} onClick={() => openPay(employee)}>
+                              Tarifa
                             </button>
-                          ) : (
-                            <button className="btn btn-primary" type="button" disabled={busy} onClick={() => void setActive(employee, true)}>
-                              {pendingId === employee.id && <span className="spinner spinner-light" aria-hidden="true" />}
-                              Activar
-                            </button>
-                          )}
+                            {employee.active ? (
+                              <button className="btn btn-secondary" type="button" disabled={busy} onClick={() => { setDialogError(""); setDeactivateTarget(employee); }}>
+                                Desactivar
+                              </button>
+                            ) : (
+                              <button className="btn btn-primary" type="button" disabled={busy} onClick={() => void setActive(employee, true)}>
+                                {pendingId === employee.id && <span className="spinner spinner-light" aria-hidden="true" />}
+                                Activar
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -303,6 +371,33 @@ export default function StaffPanel() {
           </section>
         </section>
       </div>
+
+      {payTarget && (
+        <div className="modal-backdrop">
+          <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="pay-title">
+            <h2 id="pay-title">Tarifa y Yape</h2>
+            <p>{payTarget.name} ({payTarget.employeeCode}). El celular queda asociado para un pago futuro; esta pantalla no realiza ningún pago.</p>
+            <form className="staff-form" onSubmit={(event) => void savePay(event)}>
+              <label className="field">
+                <span>Tarifa por hora (S/)</span>
+                <input value={rateInput} onChange={(event) => setRateInput(event.target.value)} inputMode="decimal" autoComplete="off" disabled={pendingId === payTarget.id} />
+              </label>
+              <label className="field">
+                <span>Celular Yape</span>
+                <input value={phoneInput} onChange={(event) => setPhoneInput(event.target.value)} inputMode="tel" autoComplete="tel" placeholder="987654321" disabled={pendingId === payTarget.id} />
+              </label>
+              {dialogError && <p className="field-error" role="alert">{dialogError}</p>}
+              <div className="modal-actions">
+                <button ref={cancelRef} className="btn btn-secondary" type="button" disabled={pendingId === payTarget.id} onClick={() => setPayTarget(null)}>Cancelar</button>
+                <button className="btn btn-primary" type="submit" disabled={pendingId === payTarget.id}>
+                  {pendingId === payTarget.id && <span className="spinner spinner-light" aria-hidden="true" />}
+                  {pendingId === payTarget.id ? "Guardando…" : "Guardar"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {deactivateTarget && (
         <div className="modal-backdrop">

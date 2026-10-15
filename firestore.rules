@@ -17,5 +17,8 @@ service cloud.firestore {
     match /accounts/{accountId} {
       allow read, write: if false;
     }
+    match /weeklyPayments/{paymentId} {
+      allow read, write: if false;
+    }
   }
 }

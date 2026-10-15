@@ -75,6 +75,9 @@ Endpoints de personal y registros, todos con `Authorization: Bearer <ID token>`:
 - `GET /api/admin/employees`
 - `POST /api/admin/employees` con `name` y `employeeCode`
 - `POST /api/admin/employees/active` con `employeeId` y `active`
+- `POST /api/admin/employees/pay` con `employeeId`, `hourlyRate` y `yapePhone`
+- `GET /api/admin/settlements?week=YYYY-MM-DD` calcula la semana sin guardarla
+- `POST /api/admin/settlements` con `employeeId` y `weekStart` confirma la liquidación
 
 Endpoints de cuentas, con la misma autorización:
 
@@ -86,6 +89,8 @@ Endpoints de cuentas, con la misma autorización:
 `POST /api/admin/accounts` crea el usuario en Firebase Authentication y después el documento `accounts/{uid}` con `name`, `email`, `role: "admin"`, `active: true`, `createdAt` y `updatedAt`. También conserva el claim `admin: true` para la transición. Si el documento no llega a guardarse, se elimina solo el usuario creado en esa petición. No se puede desactivar al último administrador activo.
 
 El alta de un trabajador guarda nombre, código, estado y fecha. No escribe `pin` ni `pinHash`. Los documentos de personal que ya tenían `pinHash` no se reescriben. Ninguna respuesta incluye `pin`, `pinHash` ni la contraseña de una cuenta. El panel administrativo usa estos endpoints para listar, registrar y activar o desactivar personal. `GET /api/admin/employees` incluye `createdAt` en ISO cuando el documento ya tiene esa fecha; si no existe, el valor es `null`.
+
+`hourlyRate` y `yapePhone` son opcionales en `employees`. Configurarlos actualiza solo esos campos. La semana de liquidación va de lunes a domingo, hora de Perú. `GET /api/admin/settlements` no escribe. `POST /api/admin/settlements` guarda en `weeklyPayments/{employeeId}_{lunes}` una fotografía de minutos, tarifa e importe con `status: "confirmed"` y `currency: "PEN"`. No marca pagos ni llama a ningún proveedor. Si la liquidación ya existe, se devuelve la guardada. Un cambio posterior de tarifa no la modifica. Las jornadas abiertas, inválidas o duplicadas no suman horas. Si una jornada cruza el lunes, sus minutos se reparten entre las dos semanas.
 
 ### Primera cuenta de administrador
 

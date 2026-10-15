@@ -3,6 +3,16 @@ import { parseAttendanceInput, recordAttendance } from "./attendance.js";
 import { HttpError } from "./http-error.js";
 import { createRateLimiter } from "./rate-limit.js";
 import type { FirestoreReadiness } from "./firebase.js";
+import {
+  draftFromView,
+  parsePayUpdate,
+  parseSettlementConfirm,
+  previewWeek,
+  settlementAttendanceWindow,
+  settlementFromPayment,
+  weekBoundsFromKey,
+  weekContaining,
+} from "./settlements.js";
 import type { AccountRecord, AccountStore, AdminDatabase, AttendanceDatabase, AuthDirectory, TokenVerifier } from "./types.js";
 
 const NOT_CONFIGURED = "El servidor no está configurado para acceder a Firestore.";
@@ -254,6 +264,73 @@ export function createApp(options: AppOptions) {
       if (!options.database) throw new HttpError(503, NOT_CONFIGURED);
       const input = parseActive(req.body);
       res.json(await options.database.setEmployeeActive(input.employeeId, input.active));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/admin/employees/pay", async (req, res, next) => {
+    try {
+      if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
+      await requireAdmin(req, options.verifyToken, options.accounts ?? null);
+      if (!options.database) throw new HttpError(503, NOT_CONFIGURED);
+      const input = parsePayUpdate(req.body);
+      res.json(await options.database.updateEmployeePay(input.employeeId, input));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/admin/settlements", async (req, res, next) => {
+    try {
+      if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
+      await requireAdmin(req, options.verifyToken, options.accounts ?? null);
+      if (!options.database) throw new HttpError(503, NOT_CONFIGURED);
+      const requested = typeof req.query.week === "string" ? req.query.week : "";
+      const week = requested ? weekBoundsFromKey(requested) : weekContaining(now());
+      if (!week) throw new HttpError(400, "La semana no es válida. Indica el lunes de inicio.");
+      const window = settlementAttendanceWindow(week);
+      const [employees, attendances, payments] = await Promise.all([
+        options.database.listEmployees(),
+        options.database.listSettlementAttendances(window.from, window.to),
+        options.database.listWeeklyPayments(week.weekStartKey),
+      ]);
+      const settlements = previewWeek({
+        employees,
+        attendances,
+        confirmed: payments.map(settlementFromPayment),
+        week,
+      });
+      res.json({ weekStart: week.weekStartKey, weekEnd: week.weekEndKey, settlements });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/admin/settlements", async (req, res, next) => {
+    try {
+      if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
+      await requireAdmin(req, options.verifyToken, options.accounts ?? null);
+      if (!options.database) throw new HttpError(503, NOT_CONFIGURED);
+      const input = parseSettlementConfirm(req.body);
+      const week = weekBoundsFromKey(input.weekStart);
+      if (!week) throw new HttpError(400, "La semana no es válida. Indica el lunes de inicio.");
+      const stored = (await options.database.listWeeklyPayments(week.weekStartKey)).find((payment) => payment.employeeId === input.employeeId);
+      if (stored) {
+        res.json({ created: false, settlement: settlementFromPayment(stored) });
+        return;
+      }
+      const employees = await options.database.listEmployees();
+      const employee = employees.find((item) => item.id === input.employeeId);
+      if (!employee) throw new HttpError(404, "No encontramos ese trabajador.");
+      const window = settlementAttendanceWindow(week);
+      const attendances = (await options.database.listSettlementAttendances(window.from, window.to))
+        .filter((attendance) => attendance.employeeId === input.employeeId);
+      const [settlement] = previewWeek({ employees: [employee], attendances, confirmed: [], week });
+      if (!settlement) throw new HttpError(400, "No hay jornadas cerradas para liquidar en esa semana.");
+      const draft = draftFromView(settlement);
+      const saved = await options.database.saveWeeklyPayment(draft, now());
+      res.status(saved.created ? 201 : 200).json({ created: saved.created, settlement: settlementFromPayment(saved.payment) });
     } catch (error) {
       next(error);
     }

@@ -405,7 +405,7 @@ test("una escritura fallida no confirma la marcación", async () => {
 });
 
 test("el frontend no escribe asistencias ni llama Cloud Functions", () => {
-  const files = ["../src/App.tsx", "../src/firebase.ts", "../src/AdminDashboard.tsx", "../src/AccountsPanel.tsx", "../src/StaffPanel.tsx"];
+  const files = ["../src/App.tsx", "../src/firebase.ts", "../src/AdminDashboard.tsx", "../src/AccountsPanel.tsx", "../src/StaffPanel.tsx", "../src/SettlementsPanel.tsx"];
   const combined = files.map((file) => readFileSync(resolve(process.cwd(), file), "utf8")).join("\n");
   for (const forbidden of ["addDoc", "setDoc", "updateDoc", "deleteDoc", "writeBatch", "httpsCallable", "getFirestore", "collection("]) {
     assert.equal(combined.includes(forbidden), false, forbidden);

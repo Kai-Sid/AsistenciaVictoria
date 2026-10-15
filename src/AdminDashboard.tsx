@@ -11,9 +11,11 @@ import {
   ShieldCheck,
   Timer,
   Users,
+  Wallet,
   X,
 } from "lucide-react";
 import AccountsPanel from "./AccountsPanel";
+import SettlementsPanel from "./SettlementsPanel";
 import StaffPanel from "./StaffPanel";
 
 export type AttendanceRow = {
@@ -27,7 +29,7 @@ export type AttendanceRow = {
 };
 
 type Notice = { type: "success" | "error" | "info"; text: string };
-type View = "resumen" | "registros" | "personal" | "cuentas";
+type View = "resumen" | "registros" | "personal" | "liquidaciones" | "cuentas";
 type StatusFilter = "all" | "open" | "closed";
 type DayPoint = { key: string; label: string; entries: number; exits: number };
 type WorkerHours = { key: string; name: string; code: string; minutes: number };
@@ -343,9 +345,9 @@ export default function AdminDashboard({ email, rows, busy, recordsReady, notice
     setMenuOpen(false);
   }
 
-  const managed = view === "personal" || view === "cuentas";
-  const title = view === "resumen" ? "Panel de asistencia" : view === "registros" ? "Registros de asistencia" : view === "personal" ? "Personal" : "Cuentas administrativas";
-  const subtitle = view === "personal" ? "Alta y estado de los trabajadores" : view === "cuentas" ? "Alta y estado de los administradores" : "Últimos 500 registros";
+  const managed = view === "personal" || view === "cuentas" || view === "liquidaciones";
+  const title = view === "resumen" ? "Panel de asistencia" : view === "registros" ? "Registros de asistencia" : view === "personal" ? "Personal" : view === "liquidaciones" ? "Liquidaciones" : "Cuentas administrativas";
+  const subtitle = view === "personal" ? "Alta y estado de los trabajadores" : view === "liquidaciones" ? "Horas y montos por semana" : view === "cuentas" ? "Alta y estado de los administradores" : "Últimos 500 registros";
 
   return (
     <div className={`admin-app${menuOpen ? " menu-open" : ""}`}>
@@ -369,6 +371,10 @@ export default function AdminDashboard({ email, rows, busy, recordsReady, notice
           <button className={view === "personal" ? "nav-item active" : "nav-item"} type="button" aria-current={view === "personal" ? "page" : undefined} onClick={() => selectView("personal")}>
             <Users size={18} aria-hidden="true" />
             Personal
+          </button>
+          <button className={view === "liquidaciones" ? "nav-item active" : "nav-item"} type="button" aria-current={view === "liquidaciones" ? "page" : undefined} onClick={() => selectView("liquidaciones")}>
+            <Wallet size={18} aria-hidden="true" />
+            Liquidaciones
           </button>
           <button className={view === "cuentas" ? "nav-item active" : "nav-item"} type="button" aria-current={view === "cuentas" ? "page" : undefined} onClick={() => selectView("cuentas")}>
             <ShieldCheck size={18} aria-hidden="true" />
@@ -410,7 +416,7 @@ export default function AdminDashboard({ email, rows, busy, recordsReady, notice
 
         <main className="admin-content" aria-busy={managed ? undefined : !recordsReady || busy}>
           {notice && !managed && <div className={`notice ${notice.type}`} role="status">{notice.text}</div>}
-          {view === "personal" ? <StaffPanel /> : view === "cuentas" ? <AccountsPanel onSelfDeactivated={onLogout} /> : !recordsReady ? (
+          {view === "personal" ? <StaffPanel /> : view === "cuentas" ? <AccountsPanel onSelfDeactivated={onLogout} /> : view === "liquidaciones" ? <SettlementsPanel /> : !recordsReady ? (
             <section className="panel-card loading-card" role="status">
               <span className="spinner spinner-light" aria-hidden="true" />
               <p>Consultando registros…</p>

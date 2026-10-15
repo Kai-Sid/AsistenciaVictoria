@@ -7,6 +7,8 @@ export type EmployeePublic = {
 
 export type EmployeeRecord = EmployeePublic & {
   createdAt: string | null;
+  hourlyRate: number | null;
+  yapePhone: string | null;
 };
 
 export type EmployeeMatch = {
@@ -57,11 +59,45 @@ export type AttendanceDatabase = {
   runAttendanceTransaction<T>(work: (tx: AttendanceTx) => Promise<T>): Promise<T>;
 };
 
+export type WeeklyPaymentRecord = {
+  id: string;
+  employeeId: string;
+  employeeCode: string;
+  employeeName: string;
+  weekStart: string;
+  weekEnd: string;
+  totalMinutes: number;
+  hourlyRate: number;
+  amount: number;
+  currency: "PEN";
+  status: "confirmed";
+  yapePhone: string | null;
+  shifts: { attendanceId: string; checkInAt: string; checkOutAt: string; minutes: number }[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type AdminDatabase = {
   createEmployee(input: { name: string; employeeCode: string }): Promise<EmployeePublic>;
   listEmployees(): Promise<EmployeeRecord[]>;
   listAttendances(): Promise<AttendanceView[]>;
   setEmployeeActive(employeeId: string, active: boolean): Promise<{ ok: true }>;
+  updateEmployeePay(employeeId: string, input: { hourlyRate: number; yapePhone: string | null }): Promise<EmployeeRecord>;
+  listSettlementAttendances(from: Date, to: Date): Promise<AttendanceDoc[]>;
+  listWeeklyPayments(weekStart: string): Promise<WeeklyPaymentRecord[]>;
+  saveWeeklyPayment(draft: {
+    employeeId: string;
+    employeeCode: string;
+    employeeName: string;
+    weekStart: string;
+    weekEnd: string;
+    totalMinutes: number;
+    hourlyRate: number;
+    amount: number;
+    currency: "PEN";
+    yapePhone: string | null;
+    shifts: WeeklyPaymentRecord["shifts"];
+  }, now: Date): Promise<{ payment: WeeklyPaymentRecord; created: boolean }>;
 };
 
 export type TokenCheck = { uid: string; admin: boolean; email: string | null };
