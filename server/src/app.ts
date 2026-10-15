@@ -361,7 +361,7 @@ export function createApp(options: AppOptions) {
           yapeQrRegistered: employee?.yapeQrRegistered === true,
           paymentStatus: settlement.status === "confirmed" ? paymentStatus.get(settlement.employeeId) ?? null : null,
           transfer: declaration ? {
-            status: "declared" as const,
+            status: declaration.status,
             amount: declaration.amount,
             declaredAt: declaration.declaredAt,
             declaredByName: declaration.declaredByName,
@@ -436,7 +436,7 @@ export function createApp(options: AppOptions) {
         verifiesDeposit: false,
         message: TRANSFER_DECLARED_MESSAGE,
         transfer: {
-          status: "declared",
+          status: declared.declaration.status,
           amount: declared.declaration.amount,
           declaredAt: declared.declaration.declaredAt,
           declaredByName: declared.declaration.declaredByName,

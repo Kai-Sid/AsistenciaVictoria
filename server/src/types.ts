@@ -24,6 +24,7 @@ export type YapeDeclarationRecord = {
   weekEnd: string;
   amount: number;
   currency: "PEN";
+  status: "reported_paid";
   declaredAt: string;
   declaredByUid: string;
   declaredByName: string;

@@ -232,11 +232,12 @@ export class FirestoreDatabase implements AttendanceDatabase, AdminDatabase {
         weekEnd: draft.weekEnd,
         amount: draft.amount,
         currency: "PEN",
+        status: "reported_paid",
         declaredAt: Timestamp.fromDate(new Date(draft.declaredAt)),
         declaredByUid: draft.declaredByUid,
         declaredByName: draft.declaredByName,
       });
-      return { declaration: { ...draft }, created: true };
+      return { declaration: { ...draft, status: "reported_paid" }, created: true };
     });
   }
 
@@ -436,6 +437,8 @@ export class FirestoreDatabase implements AttendanceDatabase, AdminDatabase {
     if (typeof declaredByUid !== "string" || declaredByUid.length === 0 || declaredByUid.length > 128) return null;
     if (typeof declaredByName !== "string" || declaredByName.length < 2 || declaredByName.length > 120) return null;
     if (get("currency") != null && get("currency") !== "PEN") return null;
+    const status = get("status");
+    if (status != null && status !== "reported_paid") return null;
     return {
       id,
       employeeId: String(get("employeeId") ?? ""),
@@ -443,6 +446,7 @@ export class FirestoreDatabase implements AttendanceDatabase, AdminDatabase {
       weekEnd,
       amount,
       currency: "PEN",
+      status: "reported_paid",
       declaredAt: declaredAt.toISOString(),
       declaredByUid,
       declaredByName,

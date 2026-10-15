@@ -152,8 +152,9 @@ export class MemoryDatabase implements AttendanceDatabase, AdminDatabase {
     return this.enqueue(() => {
       const existing = this.yapeDeclarations.find((item) => item.id === draft.id);
       if (existing) return { declaration: { ...existing }, created: false };
-      this.yapeDeclarations.push({ ...draft });
-      return { declaration: { ...draft }, created: true };
+      const declaration: YapeDeclarationRecord = { ...draft, status: "reported_paid" };
+      this.yapeDeclarations.push(declaration);
+      return { declaration: { ...declaration }, created: true };
     });
   }
 

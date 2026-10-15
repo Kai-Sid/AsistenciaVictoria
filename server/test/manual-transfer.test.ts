@@ -4,7 +4,9 @@ import type { AddressInfo } from "node:net";
 import test from "node:test";
 import { createApp } from "../src/app.js";
 import { MemoryDatabase } from "../src/memory-db.js";
-import type { TokenVerifier } from "../src/types.js";
+import { TRANSFER_ALREADY_DECLARED, TRANSFER_ALREADY_VERIFIED } from "../src/manual-transfer.js";
+import { PAYMENT_ALREADY_PAID, PAYMENT_PROVIDER_PENDING, PAYMENT_UNCERTAIN } from "../src/payments.js";
+import type { PaymentStatus, TokenVerifier } from "../src/types.js";
 
 const verifyToken: TokenVerifier = async (idToken: string) => {
   if (idToken === "admin-token") return { uid: "admin-1", admin: true, email: "admin@example.com" };
@@ -57,6 +59,40 @@ function readyDatabase() {
     createdAt: checkInAt,
   });
   return db;
+}
+
+function offersYapePayment(row: {
+  status: string;
+  amount: number | null;
+  transfer: { status?: string } | null;
+  paymentStatus: string | null;
+}) {
+  return row.status === "confirmed"
+    && row.amount != null
+    && row.transfer?.status !== "reported_paid"
+    && row.paymentStatus !== "paid"
+    && row.paymentStatus !== "pending"
+    && row.paymentStatus !== "processing";
+}
+
+function rememberOperation(db: MemoryDatabase, status: PaymentStatus) {
+  const payment = db.weeklyPayments[0];
+  db.paymentOperations.push({
+    id: `${payment.employeeId}_${payment.weekStart}`,
+    employeeId: payment.employeeId,
+    weekStart: payment.weekStart,
+    weekEnd: payment.weekEnd,
+    amount: payment.amount,
+    currency: "PEN",
+    yapePhone: payment.yapePhone ?? "987654321",
+    status,
+    attempt: 1,
+    provider: status === "failed" ? null : "proveedor",
+    providerReference: status === "paid" ? "ref-1" : null,
+    redirectUrl: status === "processing" ? "https://pagos.example/sesion" : null,
+    createdAt: NOW.toISOString(),
+    updatedAt: NOW.toISOString(),
+  });
 }
 
 async function confirm(base: string) {
@@ -187,12 +223,14 @@ test("la declaración manual guarda importe, fecha y administrador sin marcar un
     assert.equal(declared.status, 201);
     assert.equal(declaredBody.created, true);
     assert.equal(declaredBody.verifiesDeposit, false);
-    assert.equal(declaredBody.transfer.status, "declared");
+    assert.equal(declaredBody.transfer.status, "reported_paid");
+    assert.notEqual(declaredBody.transfer.status, "paid");
     assert.equal(declaredBody.transfer.amount, 10);
     assert.equal(declaredBody.transfer.declaredAt, NOW.toISOString());
     assert.equal(declaredBody.transfer.declaredByName, "admin@example.com");
     assert.equal(declaredBody.transfer.verifiesDeposit, false);
     assert.equal(db.yapeDeclarations.length, 1);
+    assert.equal(db.yapeDeclarations[0].status, "reported_paid");
     assert.equal(db.yapeDeclarations[0].declaredByUid, "admin-1");
     assert.equal(db.paymentOperations.length, 0);
     assert.equal(JSON.stringify(db.weeklyPayments), settlement);
@@ -206,11 +244,15 @@ test("la declaración manual guarda importe, fecha y administrador sin marcar un
       body: JSON.stringify({ employeeId: "ana-1", weekStart: "2026-10-12", amount: 10, declaredByName: "Otra persona" }),
     });
     const againBody = await again.json();
-    assert.equal(again.status, 200);
-    assert.equal(againBody.created, false);
-    assert.equal(againBody.transfer.declaredByName, "admin@example.com");
-    assert.equal(againBody.transfer.declaredAt, NOW.toISOString());
+    assert.equal(again.status, 409);
+    assert.equal(againBody.ok, false);
+    assert.equal(againBody.message, TRANSFER_ALREADY_DECLARED);
+    assert.equal("transfer" in againBody, false);
     assert.equal(db.yapeDeclarations.length, 1);
+    assert.equal(db.yapeDeclarations[0].status, "reported_paid");
+    assert.equal(db.yapeDeclarations[0].declaredByName, "admin@example.com");
+    assert.equal(db.yapeDeclarations[0].declaredAt, NOW.toISOString());
+    assert.equal(db.yapeDeclarations[0].amount, 10);
 
     const changed = await fetch(`${base}/api/admin/settlements/transfer`, {
       method: "POST",
@@ -222,10 +264,238 @@ test("la declaración manual guarda importe, fecha y administrador sin marcar un
 
     const after = await fetch(`${base}/api/admin/settlements?week=2026-10-12`, { headers: adminHeaders() });
     const afterBody = await after.json();
-    assert.equal(afterBody.settlements[0].transfer.status, "declared");
+    assert.equal(afterBody.settlements[0].transfer.status, "reported_paid");
+    assert.notEqual(afterBody.settlements[0].transfer.status, "paid");
     assert.equal(afterBody.settlements[0].transfer.verifiesDeposit, false);
+    assert.equal(afterBody.settlements[0].transfer.amount, 10);
     assert.equal(afterBody.settlements[0].paymentStatus, null);
     assert.equal(afterBody.settlements[0].amount, 10);
+    assert.equal(afterBody.settlements[0].status, "confirmed");
+    assert.equal(offersYapePayment(afterBody.settlements[0]), false);
+    assert.equal(offersYapePayment(listedBody.settlements[0]), true);
+  } finally {
+    server.close();
+  }
+});
+
+test("una transferencia declarada se conserva al consultar y no admite otro registro", async () => {
+  const db = readyDatabase();
+  const { server, base } = await listen(createApp({
+    database: db,
+    verifyToken,
+    allowedOrigins: ["http://localhost:5174"],
+    now: () => NOW,
+  }));
+  try {
+    await confirm(base);
+    const settlement = JSON.stringify(db.weeklyPayments);
+    const attendance = JSON.stringify(db.attendances);
+    const declared = await fetch(`${base}/api/admin/settlements/transfer`, {
+      method: "POST",
+      headers: adminHeaders(true),
+      body: JSON.stringify({ employeeId: "ana-1", weekStart: "2026-10-12", amount: 10, status: "paid", verifiesDeposit: true }),
+    });
+    assert.equal(declared.status, 201);
+    assert.equal((await declared.json()).transfer.status, "reported_paid");
+
+    const listed = await fetch(`${base}/api/admin/settlements?week=2026-10-12`, { headers: adminHeaders() });
+    const listedBody = await listed.json();
+    const row = listedBody.settlements[0];
+    assert.equal(row.status, "confirmed");
+    assert.equal(row.amount, 10);
+    assert.equal(row.transfer.status, "reported_paid");
+    assert.equal(row.transfer.verifiesDeposit, false);
+    assert.equal(row.transfer.amount, 10);
+    assert.equal(row.paymentStatus, null);
+    assert.equal(offersYapePayment(row), false);
+    assert.equal(db.yapeDeclarations[0].status, "reported_paid");
+    assert.notEqual(db.yapeDeclarations[0].status, "paid");
+
+    const duplicate = await fetch(`${base}/api/admin/settlements/transfer`, {
+      method: "POST",
+      headers: adminHeaders(true),
+      body: JSON.stringify({ employeeId: "ana-1", weekStart: "2026-10-12", amount: 10, status: "paid" }),
+    });
+    const duplicateBody = await duplicate.json();
+    assert.equal(duplicate.status, 409);
+    assert.equal(duplicateBody.message, TRANSFER_ALREADY_DECLARED);
+    assert.equal(db.yapeDeclarations.length, 1);
+    assert.equal(db.yapeDeclarations[0].declaredByUid, "admin-1");
+    assert.equal(db.paymentOperations.length, 0);
+    assert.equal(JSON.stringify(db.weeklyPayments), settlement);
+    assert.equal(JSON.stringify(db.attendances), attendance);
+
+    const [first, second] = await Promise.all([
+      fetch(`${base}/api/admin/settlements/transfer`, {
+        method: "POST",
+        headers: adminHeaders(true),
+        body: JSON.stringify({ employeeId: "ana-1", weekStart: "2026-10-12", amount: 10 }),
+      }),
+      fetch(`${base}/api/admin/settlements/transfer`, {
+        method: "POST",
+        headers: adminHeaders(true),
+        body: JSON.stringify({ employeeId: "ana-1", weekStart: "2026-10-12", amount: 10 }),
+      }),
+    ]);
+    assert.equal(first.status, 409);
+    assert.equal(second.status, 409);
+    assert.equal(db.yapeDeclarations.length, 1);
+    assert.equal(JSON.stringify(db.weeklyPayments), settlement);
+  } finally {
+    server.close();
+  }
+});
+
+test("un pago verificado y una operación incierta no se duplican; un fallo confirmado sí admite un intento", async () => {
+  const db = readyDatabase();
+  const { server, base } = await listen(createApp({
+    database: db,
+    verifyToken,
+    allowedOrigins: ["http://localhost:5174"],
+    now: () => NOW,
+  }));
+  try {
+    await confirm(base);
+    const settlement = JSON.stringify(db.weeklyPayments);
+    rememberOperation(db, "paid");
+
+    const listed = await fetch(`${base}/api/admin/settlements?week=2026-10-12`, { headers: adminHeaders() });
+    const paidRow = (await listed.json()).settlements[0];
+    assert.equal(paidRow.paymentStatus, "paid");
+    assert.equal(paidRow.transfer, null);
+    assert.equal(paidRow.amount, 10);
+    assert.equal(offersYapePayment(paidRow), false);
+
+    const declared = await fetch(`${base}/api/admin/settlements/transfer`, {
+      method: "POST",
+      headers: adminHeaders(true),
+      body: JSON.stringify({ employeeId: "ana-1", weekStart: "2026-10-12", amount: 10, status: "reported_paid" }),
+    });
+    const declaredBody = await declared.json();
+    assert.equal(declared.status, 409);
+    assert.equal(declaredBody.message, TRANSFER_ALREADY_VERIFIED);
+    assert.equal(db.yapeDeclarations.length, 0);
+    assert.equal(db.paymentOperations[0].status, "paid");
+
+    const pay = await fetch(`${base}/api/admin/settlements/pay`, {
+      method: "POST",
+      headers: adminHeaders(true),
+      body: JSON.stringify({ employeeId: "ana-1", weekStart: "2026-10-12", status: "paid" }),
+    });
+    const payBody = await pay.json();
+    assert.equal(pay.status, 409);
+    assert.equal(payBody.message, PAYMENT_ALREADY_PAID);
+    assert.equal(db.paymentOperations.length, 1);
+    assert.equal(db.paymentOperations[0].status, "paid");
+    assert.equal(db.paymentOperations[0].attempt, 1);
+    assert.equal(JSON.stringify(db.weeklyPayments), settlement);
+
+    db.paymentOperations[0].status = "pending";
+    const pending = await fetch(`${base}/api/admin/settlements/transfer`, {
+      method: "POST",
+      headers: adminHeaders(true),
+      body: JSON.stringify({ employeeId: "ana-1", weekStart: "2026-10-12", amount: 10 }),
+    });
+    assert.equal(pending.status, 409);
+    assert.equal((await pending.json()).message, PAYMENT_UNCERTAIN);
+    assert.equal(db.yapeDeclarations.length, 0);
+    assert.equal(db.paymentOperations[0].status, "pending");
+
+    const pendingList = await fetch(`${base}/api/admin/settlements?week=2026-10-12`, { headers: adminHeaders() });
+    assert.equal(offersYapePayment((await pendingList.json()).settlements[0]), false);
+
+    db.paymentOperations[0].status = "failed";
+    db.paymentOperations[0].provider = null;
+    db.paymentOperations[0].providerReference = null;
+    const failedList = await fetch(`${base}/api/admin/settlements?week=2026-10-12`, { headers: adminHeaders() });
+    const failedBefore = (await failedList.json()).settlements[0];
+    assert.equal(failedBefore.paymentStatus, "failed");
+    assert.equal(failedBefore.transfer, null);
+    assert.equal(offersYapePayment(failedBefore), true);
+    const retry = await fetch(`${base}/api/admin/settlements/pay`, {
+      method: "POST",
+      headers: adminHeaders(true),
+      body: JSON.stringify({ employeeId: "ana-1", weekStart: "2026-10-12" }),
+    });
+    assert.equal(retry.status, 503);
+    assert.equal((await retry.json()).message, PAYMENT_PROVIDER_PENDING);
+    assert.equal(db.paymentOperations[0].status, "failed");
+    assert.equal(db.paymentOperations[0].attempt, 1);
+
+    const manual = await fetch(`${base}/api/admin/settlements/transfer`, {
+      method: "POST",
+      headers: adminHeaders(true),
+      body: JSON.stringify({ employeeId: "ana-1", weekStart: "2026-10-12", amount: 10, status: "paid" }),
+    });
+    const manualBody = await manual.json();
+    assert.equal(manual.status, 201);
+    assert.equal(manualBody.transfer.status, "reported_paid");
+    assert.equal(manualBody.verifiesDeposit, false);
+    assert.equal(db.paymentOperations[0].status, "failed");
+    assert.equal(db.yapeDeclarations.length, 1);
+    assert.equal(db.yapeDeclarations[0].status, "reported_paid");
+
+    const afterFailed = await fetch(`${base}/api/admin/settlements?week=2026-10-12`, { headers: adminHeaders() });
+    const failedRow = (await afterFailed.json()).settlements[0];
+    assert.equal(failedRow.paymentStatus, "failed");
+    assert.equal(failedRow.transfer.status, "reported_paid");
+    assert.equal(failedRow.amount, 10);
+    assert.equal(offersYapePayment(failedRow), false);
+
+    const second = await fetch(`${base}/api/admin/settlements/transfer`, {
+      method: "POST",
+      headers: adminHeaders(true),
+      body: JSON.stringify({ employeeId: "ana-1", weekStart: "2026-10-12", amount: 10 }),
+    });
+    assert.equal(second.status, 409);
+    assert.equal((await second.json()).message, TRANSFER_ALREADY_DECLARED);
+    const blockedPay = await fetch(`${base}/api/admin/settlements/pay`, {
+      method: "POST",
+      headers: adminHeaders(true),
+      body: JSON.stringify({ employeeId: "ana-1", weekStart: "2026-10-12" }),
+    });
+    assert.equal(blockedPay.status, 409);
+    assert.equal((await blockedPay.json()).message, TRANSFER_ALREADY_DECLARED);
+    assert.equal(db.paymentOperations.length, 1);
+    assert.equal(db.paymentOperations[0].status, "failed");
+    assert.equal(db.yapeDeclarations.length, 1);
+    assert.equal(JSON.stringify(db.weeklyPayments), settlement);
+    assert.equal(db.weeklyPayments[0].amount, 10);
+    assert.equal(db.weeklyPayments[0].status, "confirmed");
+  } finally {
+    server.close();
+  }
+});
+
+test("dos registros simultáneos dejan una sola declaración", async () => {
+  const db = readyDatabase();
+  const { server, base } = await listen(createApp({
+    database: db,
+    verifyToken,
+    allowedOrigins: ["http://localhost:5174"],
+    now: () => NOW,
+  }));
+  try {
+    await confirm(base);
+    const settlement = JSON.stringify(db.weeklyPayments);
+    const requests = [0, 1].map(() => fetch(`${base}/api/admin/settlements/transfer`, {
+      method: "POST",
+      headers: adminHeaders(true),
+      body: JSON.stringify({ employeeId: "ana-1", weekStart: "2026-10-12", amount: 10, status: "paid" }),
+    }));
+    const responses = await Promise.all(requests);
+    const statuses = responses.map((response) => response.status).sort();
+    assert.deepEqual(statuses, [201, 409]);
+    assert.equal(db.yapeDeclarations.length, 1);
+    assert.equal(db.yapeDeclarations[0].status, "reported_paid");
+    assert.equal(db.yapeDeclarations[0].amount, 10);
+    assert.equal(db.paymentOperations.length, 0);
+    assert.equal(JSON.stringify(db.weeklyPayments), settlement);
+    const listed = await fetch(`${base}/api/admin/settlements?week=2026-10-12`, { headers: adminHeaders() });
+    const row = (await listed.json()).settlements[0];
+    assert.equal(row.transfer.status, "reported_paid");
+    assert.equal(row.paymentStatus, null);
+    assert.equal(offersYapePayment(row), false);
   } finally {
     server.close();
   }

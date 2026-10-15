@@ -25,6 +25,7 @@ type Settlement = {
 };
 
 type TransferInfo = {
+  status: "reported_paid";
   amount: number;
   declaredAt: string;
   declaredByName: string;
@@ -48,8 +49,8 @@ const STATUS_LABEL: Record<Settlement["status"], string> = {
 const PAYMENT_LABEL: Record<PaymentStatus, string> = {
   pending: "Pago pendiente",
   processing: "Pago en proceso",
-  paid: "Pagado",
-  failed: "Pago fallido",
+  paid: "Pago verificado",
+  failed: "Operación fallida",
 };
 
 const MISSING_QR = "Falta registrar el QR del trabajador.";
@@ -80,19 +81,33 @@ function formatSoles(value: number | null) {
   }).format(value);
 }
 
-function transferLabel(row: { status: Settlement["status"]; transfer: TransferInfo | null }) {
-  if (row.transfer) return "Declarada por el administrador";
-  if (row.status === "confirmed") return "Pendiente de confirmar";
-  return "Al confirmar la liquidación";
+function canOfferYapePayment(row: Pick<Settlement, "status" | "amount" | "transfer" | "paymentStatus">) {
+  return row.status === "confirmed"
+    && row.amount != null
+    && row.transfer?.status !== "reported_paid"
+    && row.paymentStatus !== "paid"
+    && row.paymentStatus !== "pending"
+    && row.paymentStatus !== "processing";
+}
+
+function transferBadges(row: Pick<Settlement, "status" | "transfer" | "paymentStatus">) {
+  const badges: { label: string; className: string }[] = [];
+  if (row.paymentStatus === "paid") badges.push({ label: "Pago verificado", className: "paid" });
+  if (row.transfer?.status === "reported_paid") badges.push({ label: "Declarada por el administrador", className: "transfer-declared" });
+  if (row.paymentStatus === "failed") badges.push({ label: "Operación fallida", className: "failed" });
+  if (row.paymentStatus === "processing") badges.push({ label: "Pago en proceso", className: "processing" });
+  if (badges.length === 0 && row.status === "confirmed") badges.push({ label: "Pendiente de pago", className: "transfer-pending" });
+  if (badges.length === 0) badges.push({ label: "Al confirmar la liquidación", className: "inactive" });
+  return badges;
 }
 
 function readTransfer(value: unknown): TransferInfo | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  if (record.status !== "declared" || record.verifiesDeposit !== false) return null;
+  if (record.status !== "reported_paid" || record.verifiesDeposit !== false) return null;
   if (typeof record.amount !== "number" || !Number.isFinite(record.amount)) return null;
   if (typeof record.declaredAt !== "string" || typeof record.declaredByName !== "string" || record.declaredByName.length === 0) return null;
-  return { amount: record.amount, declaredAt: record.declaredAt, declaredByName: record.declaredByName };
+  return { status: "reported_paid", amount: record.amount, declaredAt: record.declaredAt, declaredByName: record.declaredByName };
 }
 
 function readPaymentStatus(value: unknown): PaymentStatus | null {
@@ -358,7 +373,7 @@ export default function SettlementsPanel() {
   }
 
   function openYapePayment(row: Settlement) {
-    if (row.status !== "confirmed" || row.amount == null) return;
+    if (!canOfferYapePayment(row)) return;
     qrRequest.current += 1;
     payOpenRef.current = true;
     setExpanded(false);
@@ -381,7 +396,7 @@ export default function SettlementsPanel() {
   }
 
   async function declareTransfer() {
-    if (!payModal || payModal.transfer || declaring || payModal.amount == null) return;
+    if (!payModal || payModal.transfer?.status === "reported_paid" || declaring || payModal.amount == null) return;
     const target = payModal;
     setDeclaring(true);
     setPayModal((current) => current ? { ...current, notice: "" } : current);
@@ -394,8 +409,16 @@ export default function SettlementsPanel() {
       const transfer = readTransfer(data.transfer);
       if (!response.ok || data.verifiesDeposit !== false || !transfer) {
         const text = data.message || "No se pudo registrar la declaración.";
-        if (payOpenRef.current) setPayModal((current) => current && current.employeeId === target.employeeId ? { ...current, notice: text } : current);
-        else setDialogError(text);
+        const next = response.status === 409 ? await loadWeek(weekStart, true) : null;
+        const updated = next?.find((row) => row.employeeId === target.employeeId);
+        if (updated) setDetail(updated);
+        if (payOpenRef.current) {
+          setPayModal((current) => current && current.employeeId === target.employeeId ? {
+            ...current,
+            transfer: updated?.transfer ?? current.transfer,
+            notice: text,
+          } : current);
+        } else setDialogError(text);
         return;
       }
       const next = await loadWeek(weekStart, true);
@@ -491,11 +514,14 @@ export default function SettlementsPanel() {
                       </span>
                     </td>
                     <td>
-                      <span className={`status ${row.transfer ? "transfer-declared" : row.status === "confirmed" ? "transfer-pending" : "inactive"}`}>
-                        <span className="status-dot" aria-hidden="true" />
-                        {transferLabel(row)}
-                      </span>
-                      {row.paymentStatus && <span className="transfer-provider">Proveedor: {PAYMENT_LABEL[row.paymentStatus]}</span>}
+                      <div className="transfer-badges">
+                        {transferBadges(row).map((badge) => (
+                          <span key={badge.label} className={`status ${badge.className}`}>
+                            <span className="status-dot" aria-hidden="true" />
+                            {badge.label}
+                          </span>
+                        ))}
+                      </div>
                     </td>
                     <td>
                       <button className="btn btn-secondary" type="button" onClick={() => { setDialogError(""); setDetail(row); }}>
@@ -520,7 +546,7 @@ export default function SettlementsPanel() {
               <div><span>Tarifa aplicada</span><strong>{detail.hourlyRate == null ? "Sin tarifa" : `${formatMoney(detail.hourlyRate)} / hora`}</strong></div>
               <div><span>Importe</span><strong>{formatMoney(detail.amount)}</strong></div>
               <div><span>Liquidación calculada</span><strong>{STATUS_LABEL[detail.status]}</strong></div>
-              <div><span>Transferencia</span><strong>{transferLabel(detail)}</strong></div>
+              <div><span>Transferencia</span><strong>{transferBadges(detail).map((badge) => badge.label).join(" · ")}</strong></div>
               <div><span>Celular Yape</span><strong>{formatPhone(detail.yapePhone)}</strong></div>
               <div><span>QR de Yape</span><strong>{detail.yapeQrRegistered ? "Registrado" : "Sin registrar"}</strong></div>
               {detail.paymentStatus && <div><span>Proveedor</span><strong>{PAYMENT_LABEL[detail.paymentStatus]}</strong></div>}
@@ -528,8 +554,17 @@ export default function SettlementsPanel() {
             </div>
             {detail.status === "missing-rate" && <p>Configura la tarifa en Personal antes de confirmar. No se usa una tarifa supuesta.</p>}
             {detail.status === "confirmed" && <p>Esta liquidación conserva la tarifa y el importe del momento en que se confirmó.</p>}
-            {detail.status === "confirmed" && (
+            {canOfferYapePayment(detail) && (
               <p className="payment-note">Pagar con Yape muestra el celular y el QR registrado para que hagas la transferencia en tu aplicación. Cerrar la ventana deja la transferencia como está.</p>
+            )}
+            {detail.transfer?.status === "reported_paid" && (
+              <p className="payment-note">{detail.transfer.declaredByName} declaró esta transferencia el {formatDateTime(detail.transfer.declaredAt)}. AsistenciaVictoria no comprobó el ingreso en Yape.</p>
+            )}
+            {detail.paymentStatus === "paid" && (
+              <p className="payment-note">Este pago figura como verificado. Es independiente de una declaración del administrador.</p>
+            )}
+            {detail.paymentStatus === "failed" && canOfferYapePayment(detail) && (
+              <p className="payment-note">La operación anterior falló de forma confirmada. Puedes preparar otro intento.</p>
             )}
             <h3>Jornadas incluidas</h3>
             {detail.shifts.length === 0 ? (
@@ -575,7 +610,7 @@ export default function SettlementsPanel() {
                   {confirming ? "Confirmando…" : "Confirmar liquidación"}
                 </button>
               )}
-              {detail.status === "confirmed" && detail.amount != null && (
+              {canOfferYapePayment(detail) && (
                 <button className="btn btn-primary" type="button" disabled={confirming || declaring} onClick={() => openYapePayment(detail)}>
                   Pagar con Yape
                 </button>
@@ -599,7 +634,7 @@ export default function SettlementsPanel() {
             </div>
             <div className="yape-status-line">
               <span>Transferencia</span>
-              <strong>{payModal.transfer ? "Declarada por el administrador" : "Pendiente de confirmar"}</strong>
+              <strong>{payModal.transfer?.status === "reported_paid" ? "Declarada por el administrador" : "Pendiente de pago"}</strong>
             </div>
             <div className="yape-qr-slot" id="yape-pay-result">
               {payModal.qrStatus === "ready" && qrUrl ? (
@@ -640,7 +675,7 @@ export default function SettlementsPanel() {
             {payModal.notice && <p className="field-error" role="alert">{payModal.notice}</p>}
             <div className="modal-actions">
               <button ref={paymentCloseRef} className="btn btn-secondary" type="button" onClick={closePayModal}>Cerrar</button>
-              {!payModal.transfer && (
+              {payModal.transfer?.status !== "reported_paid" && (
                 <button className="btn btn-primary" type="button" disabled={declaring || payModal.amount == null} onClick={() => void declareTransfer()}>
                   {declaring && <span className="spinner spinner-light" aria-hidden="true" />}
                   {declaring ? "Registrando…" : "Registrar transferencia realizada"}

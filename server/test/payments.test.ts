@@ -464,6 +464,16 @@ test("la pantalla muestra el QR registrado y no llama a un proveedor", () => {
   assert.equal(panel.includes("/api/admin/employees/yape-qr"), true);
   assert.equal(panel.includes("Falta registrar el QR del trabajador."), true);
   assert.equal(panel.includes("Registrar transferencia realizada"), true);
+  assert.equal(panel.includes("canOfferYapePayment"), true);
+  assert.equal(panel.includes("reported_paid"), true);
+  assert.equal(panel.includes('row.transfer?.status !== "reported_paid"'), true);
+  assert.equal(panel.includes('row.paymentStatus !== "paid"'), true);
+  assert.equal(panel.includes("Pendiente de pago"), true);
+  assert.equal(panel.includes("Declarada por el administrador"), true);
+  assert.equal(panel.includes("Pago verificado"), true);
+  assert.equal(panel.includes("Operación fallida"), true);
+  assert.equal(panel.includes('badges.push({ label: "Pago verificado"') && panel.includes('row.transfer?.status === "reported_paid"') && panel.includes('badges.push({ label: "Declarada por el administrador"'), true);
+  assert.equal(panel.includes('if (row.transfer?.status === "reported_paid") badges.push({ label: "Pago verificado"'), false);
   assert.equal(panel.includes("/api/admin/settlements/pay"), false);
   assert.equal(panel.includes("window.location.assign"), false);
   assert.equal(panel.includes("mercadopago.com"), false);

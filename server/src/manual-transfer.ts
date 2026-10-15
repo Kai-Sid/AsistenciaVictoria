@@ -3,6 +3,8 @@ import { amountCents, settlementDocumentId, weekBoundsFromKey } from "./settleme
 import type { AdminDatabase, WeeklyPaymentRecord, YapeDeclarationRecord } from "./types.js";
 
 export const TRANSFER_DECLARED_MESSAGE = "Quedó registrada la declaración del administrador. AsistenciaVictoria no comprobó el ingreso en Yape.";
+export const TRANSFER_ALREADY_DECLARED = "Esta liquidación ya tiene una transferencia declarada por el administrador.";
+export const TRANSFER_ALREADY_VERIFIED = "Esta liquidación ya tiene un pago verificado. No se registra otra transferencia.";
 
 export type TransferActor = {
   uid: string;
@@ -68,13 +70,13 @@ export async function declareManualTransfer(
   if (clientAmount != null && !sameMoney(clientAmount, amount)) {
     throw new HttpError(409, "El importe confirmado no coincide con la liquidación.");
   }
-  const existing = (await database.listYapeDeclarations(week.weekStartKey)).find((item) => item.employeeId === input.employeeId);
-  if (existing) {
-    if (!sameMoney(existing.amount, amount)) {
-      throw new HttpError(409, "Esta transferencia ya fue declarada con otro importe.");
-    }
-    return { declaration: existing, created: false };
+  const operation = (await database.listPaymentOperations(week.weekStartKey)).find((item) => item.employeeId === input.employeeId);
+  if (operation?.status === "paid") throw new HttpError(409, TRANSFER_ALREADY_VERIFIED);
+  if (operation?.status === "pending" || operation?.status === "processing") {
+    throw new HttpError(409, "Hay una operación de pago sin resultado confirmado. Se mantiene esa operación para no repetir la transferencia.");
   }
+  const existing = (await database.listYapeDeclarations(week.weekStartKey)).find((item) => item.employeeId === input.employeeId);
+  if (existing) throw new HttpError(409, TRANSFER_ALREADY_DECLARED);
   const saved = await database.saveYapeDeclaration({
     id: settlementDocumentId(settlement.employeeId, settlement.weekStart),
     employeeId: settlement.employeeId,
@@ -82,12 +84,13 @@ export async function declareManualTransfer(
     weekEnd: settlement.weekEnd,
     amount,
     currency: "PEN",
+    status: "reported_paid",
     declaredAt: now.toISOString(),
     declaredByUid: actor.uid,
     declaredByName: actorName(actor.name),
   });
-  if (!sameMoney(saved.declaration.amount, amount)) {
-    throw new HttpError(409, "Esta transferencia ya fue declarada con otro importe.");
+  if (!saved.created || saved.declaration.status !== "reported_paid" || !sameMoney(saved.declaration.amount, amount)) {
+    throw new HttpError(409, TRANSFER_ALREADY_DECLARED);
   }
   return saved;
 }

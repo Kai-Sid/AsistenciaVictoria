@@ -1247,6 +1247,12 @@ button:disabled { cursor: not-allowed; }
   border: 1px solid rgba(242, 213, 138, 0.35);
 }
 
+.transfer-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .status.transfer-declared {
   color: var(--gold-bright);
   background: rgba(198, 163, 90, 0.16);

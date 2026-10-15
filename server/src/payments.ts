@@ -1,4 +1,5 @@
 import { HttpError } from "./http-error.js";
+import { TRANSFER_ALREADY_DECLARED } from "./manual-transfer.js";
 import { amountCents, weekBoundsFromKey } from "./settlements.js";
 import type {
   AdminDatabase,
@@ -143,6 +144,8 @@ export async function startYapePayment(
   const payable = payableSettlement(settlement);
   const existing = (await database.listPaymentOperations(week.weekStartKey)).find((item) => item.employeeId === input.employeeId);
   if (existing?.status === "paid") throw new HttpError(409, PAYMENT_ALREADY_PAID);
+  const declared = (await database.listYapeDeclarations(week.weekStartKey)).find((item) => item.employeeId === input.employeeId);
+  if (declared?.status === "reported_paid") throw new HttpError(409, TRANSFER_ALREADY_DECLARED);
   if (existing && (existing.status === "pending" || existing.status === "processing")) {
     if (Math.round(existing.amount * 100) !== Math.round(payable.amount * 100)) throw new HttpError(409, PAYMENT_UNCERTAIN);
     return resume(existing, payable.amount);
