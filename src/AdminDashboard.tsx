@@ -303,7 +303,9 @@ function ActivityChart({ points }: { points: DayPoint[] }) {
 }
 
 export default function AdminDashboard({ email, rows, busy, recordsReady, notice, onRefresh, onLogout }: Props) {
-  const [view, setView] = useState<View>("resumen");
+  const [view, setView] = useState<View>(() => (
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("pago") === "regreso" ? "liquidaciones" : "resumen"
+  ));
   const [menuOpen, setMenuOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");

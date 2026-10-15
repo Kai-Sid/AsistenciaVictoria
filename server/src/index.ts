@@ -1,6 +1,7 @@
 import { createApp } from "./app.js";
 import { FirebaseConfigError, initFirebase, type FirestoreReadiness } from "./firebase.js";
 import { resolveAllowedOrigins } from "./origins.js";
+import { paymentGatewayFromEnv } from "./payments.js";
 import type { AccountStore, AdminDatabase, AttendanceDatabase, AuthDirectory, TokenVerifier } from "./types.js";
 
 const allowedOrigins = resolveAllowedOrigins(process.env.ALLOWED_ORIGINS);
@@ -22,7 +23,15 @@ try {
   console.error(`Firebase Admin no quedó listo (${firestoreStatus}). /api/health sigue activo.`);
 }
 
-const app = createApp({ database, verifyToken, accounts, authDirectory, allowedOrigins, firestoreStatus });
+const app = createApp({
+  database,
+  verifyToken,
+  accounts,
+  authDirectory,
+  allowedOrigins,
+  firestoreStatus,
+  payments: paymentGatewayFromEnv(process.env),
+});
 const port = Number(process.env.PORT ?? 8080);
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   console.error("PORT no es válido");

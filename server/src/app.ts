@@ -1,6 +1,15 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import { parseAttendanceInput, recordAttendance } from "./attendance.js";
 import { HttpError } from "./http-error.js";
+import { declareManualTransfer, optionalDeclaredAmount, TRANSFER_DECLARED_MESSAGE } from "./manual-transfer.js";
+import {
+  acceptProviderNotification,
+  describePaymentReturn,
+  paymentGatewayFromEnv,
+  startYapePayment,
+  type PaymentGateway,
+} from "./payments.js";
+import { parseYapeQrRequest } from "./yape-qr.js";
 import { createRateLimiter } from "./rate-limit.js";
 import type { FirestoreReadiness } from "./firebase.js";
 import {
@@ -27,6 +36,7 @@ export type AppOptions = {
   firestoreStatus?: FirestoreReadiness;
   now?: () => Date;
   attendanceRateLimit?: { max: number; windowMs: number };
+  payments?: PaymentGateway;
 };
 
 type AdminAccess = {
@@ -199,10 +209,15 @@ export function createApp(options: AppOptions) {
   const limit = options.attendanceRateLimit ?? { max: 60, windowMs: 60_000 };
   const allowAttendance = createRateLimiter(limit.max, limit.windowMs);
   const allowAdmin = createRateLimiter(30, 60_000);
+  const allowWebhook = createRateLimiter(30, 60_000);
   const now = options.now ?? (() => new Date());
+  const payments = options.payments ?? paymentGatewayFromEnv(process.env);
 
   app.use(cors(allowed));
-  app.use(express.json({ limit: "16kb" }));
+  app.use((req, res, next) => {
+    const upload = req.method === "POST" && req.path === "/api/admin/employees/yape-qr";
+    return express.json({ limit: upload ? "480kb" : "16kb" })(req, res, next);
+  });
 
   app.get("/api/health", (_req, res) => {
     const status = options.firestoreStatus ?? (options.database ? "ready" : "not-configured");
@@ -281,6 +296,38 @@ export function createApp(options: AppOptions) {
     }
   });
 
+  app.post("/api/admin/employees/yape-qr", async (req, res, next) => {
+    try {
+      if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
+      await requireAdmin(req, options.verifyToken, options.accounts ?? null);
+      if (!options.database) throw new HttpError(503, NOT_CONFIGURED);
+      const input = parseYapeQrRequest(req.body);
+      const saved = await options.database.saveYapeQr(input.employeeId, "image" in input ? input.image : null, now());
+      res.json({ id: saved.id, yapeQrRegistered: saved.yapeQrRegistered });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/admin/employees/yape-qr", async (req, res, next) => {
+    try {
+      if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
+      await requireAdmin(req, options.verifyToken, options.accounts ?? null);
+      if (!options.database) throw new HttpError(503, NOT_CONFIGURED);
+      const employeeId = typeof req.query.employeeId === "string" ? req.query.employeeId.trim() : "";
+      if (!employeeId || employeeId.includes("/") || employeeId.length > 128) throw new HttpError(400, "Datos no válidos.");
+      const image = await options.database.getYapeQr(employeeId);
+      if (!image) throw new HttpError(404, "Ese trabajador no tiene un QR registrado.");
+      res.setHeader("Content-Type", image.contentType);
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("Content-Disposition", "inline");
+      res.end(image.bytes);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/admin/settlements", async (req, res, next) => {
     try {
       if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
@@ -290,16 +337,37 @@ export function createApp(options: AppOptions) {
       const week = requested ? weekBoundsFromKey(requested) : weekContaining(now());
       if (!week) throw new HttpError(400, "La semana no es válida. Indica el lunes de inicio.");
       const window = settlementAttendanceWindow(week);
-      const [employees, attendances, payments] = await Promise.all([
+      const [employees, attendances, storedPayments, operations, declarations] = await Promise.all([
         options.database.listEmployees(),
         options.database.listSettlementAttendances(window.from, window.to),
         options.database.listWeeklyPayments(week.weekStartKey),
+        options.database.listPaymentOperations(week.weekStartKey),
+        options.database.listYapeDeclarations(week.weekStartKey),
       ]);
+      const paymentStatus = new Map(operations.map((operation) => [operation.employeeId, operation.status]));
+      const employeeById = new Map(employees.map((employee) => [employee.id, employee]));
+      const declarationByEmployee = new Map(declarations.map((declaration) => [declaration.employeeId, declaration]));
       const settlements = previewWeek({
         employees,
         attendances,
-        confirmed: payments.map(settlementFromPayment),
+        confirmed: storedPayments.map(settlementFromPayment),
         week,
+      }).map((settlement) => {
+        const employee = employeeById.get(settlement.employeeId);
+        const declaration = settlement.status === "confirmed" ? declarationByEmployee.get(settlement.employeeId) : undefined;
+        return {
+          ...settlement,
+          yapePhone: employee ? employee.yapePhone : settlement.yapePhone,
+          yapeQrRegistered: employee?.yapeQrRegistered === true,
+          paymentStatus: settlement.status === "confirmed" ? paymentStatus.get(settlement.employeeId) ?? null : null,
+          transfer: declaration ? {
+            status: "declared" as const,
+            amount: declaration.amount,
+            declaredAt: declaration.declaredAt,
+            declaredByName: declaration.declaredByName,
+            verifiesDeposit: false as const,
+          } : null,
+        };
       });
       res.json({ weekStart: week.weekStartKey, weekEnd: week.weekEndKey, settlements });
     } catch (error) {
@@ -331,6 +399,76 @@ export function createApp(options: AppOptions) {
       const draft = draftFromView(settlement);
       const saved = await options.database.saveWeeklyPayment(draft, now());
       res.status(saved.created ? 201 : 200).json({ created: saved.created, settlement: settlementFromPayment(saved.payment) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/admin/settlements/pay", async (req, res, next) => {
+    try {
+      if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
+      await requireAdmin(req, options.verifyToken, options.accounts ?? null);
+      if (!options.database) throw new HttpError(503, NOT_CONFIGURED);
+      const input = parseSettlementConfirm(req.body);
+      const started = await startYapePayment(options.database, payments, input, now());
+      res.status(started.status).json(started.body);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/admin/settlements/transfer", async (req, res, next) => {
+    try {
+      if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
+      const access = await requireAdmin(req, options.verifyToken, options.accounts ?? null);
+      if (!options.database) throw new HttpError(503, NOT_CONFIGURED);
+      const input = parseSettlementConfirm(req.body);
+      const declared = await declareManualTransfer(
+        options.database,
+        input,
+        { uid: access.uid, name: access.account?.name || access.email || "Administrador" },
+        optionalDeclaredAmount(req.body),
+        now(),
+      );
+      res.status(declared.created ? 201 : 200).json({
+        ok: true,
+        created: declared.created,
+        verifiesDeposit: false,
+        message: TRANSFER_DECLARED_MESSAGE,
+        transfer: {
+          status: "declared",
+          amount: declared.declaration.amount,
+          declaredAt: declared.declaration.declaredAt,
+          declaredByName: declared.declaration.declaredByName,
+          verifiesDeposit: false,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/admin/payments/return", async (req, res, next) => {
+    try {
+      if (!allowAdmin(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
+      await requireAdmin(req, options.verifyToken, options.accounts ?? null);
+      if (!options.database) throw new HttpError(503, NOT_CONFIGURED);
+      const employeeId = typeof req.query.employeeId === "string" ? req.query.employeeId : "";
+      const weekStart = typeof req.query.weekStart === "string" ? req.query.weekStart : "";
+      res.json(await describePaymentReturn(options.database, { employeeId, weekStart }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/payments/notifications", async (req, res, next) => {
+    try {
+      if (!allowWebhook(req.ip || "desconocido")) throw new HttpError(429, "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.");
+      if (!options.database) throw new HttpError(503, NOT_CONFIGURED);
+      const result = await acceptProviderNotification(options.database, payments, req.body, {
+        get: (name) => req.get(name) ?? undefined,
+      }, now());
+      res.json({ ok: true, applied: result.applied });
     } catch (error) {
       next(error);
     }
@@ -412,6 +550,10 @@ export function createApp(options: AppOptions) {
     }
     if (error instanceof SyntaxError) {
       res.status(400).json({ ok: false, message: "La solicitud no es válida." });
+      return;
+    }
+    if (error && typeof error === "object" && "type" in error && (error as { type?: unknown }).type === "entity.too.large") {
+      res.status(413).json({ ok: false, message: "La imagen del QR supera el tamaño permitido." });
       return;
     }
     console.error("solicitud fallida");

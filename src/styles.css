@@ -1086,10 +1086,185 @@ button:disabled { cursor: not-allowed; }
   border-color: rgba(242, 213, 138, 0.35);
 }
 
-.status.confirmed {
+.status.confirmed,
+.status.paid {
   color: var(--success);
   background: rgba(52, 211, 153, 0.12);
   border-color: rgba(52, 211, 153, 0.4);
+}
+
+.status.pay-pending {
+  color: var(--gold-soft);
+  background: rgba(242, 213, 138, 0.12);
+  border-color: rgba(242, 213, 138, 0.35);
+}
+
+.status.processing {
+  color: #93c5fd;
+  background: rgba(147, 197, 253, 0.12);
+  border-color: rgba(147, 197, 253, 0.45);
+}
+
+.status.failed {
+  color: var(--error);
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
+.payment-note {
+  margin: 12px 0 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.yape-backdrop { z-index: 70; }
+
+.yape-modal {
+  width: min(100%, 460px);
+  max-height: min(92vh, 760px);
+  overflow: auto;
+  border-color: var(--gold-deep);
+}
+
+.yape-modal .yape-kicker {
+  margin: 0;
+  color: var(--gold);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.yape-modal .yape-amount {
+  margin: 14px 0 0;
+  color: var(--gold-soft);
+  font-family: 'Playfair Display', serif;
+  font-size: clamp(28px, 8vw, 36px);
+  font-weight: 600;
+  text-align: center;
+}
+
+.yape-status-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.yape-status-line > span:first-child {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.yape-status-line > strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.yape-qr-slot {
+  min-height: 168px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 20px 16px;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.yape-qr-slot strong {
+  color: var(--gold-soft);
+  font-family: 'Playfair Display', serif;
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+.yape-modal .yape-qr-slot p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.yape-qr-slot img {
+  width: min(72vw, 260px);
+  height: auto;
+  background: #fff;
+  border-radius: 12px;
+}
+
+.yape-steps {
+  margin: 14px 0 0;
+  padding-left: 18px;
+  color: var(--text);
+}
+
+.yape-steps li + li { margin-top: 6px; }
+
+.yape-enlarge {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.88);
+}
+
+.yape-enlarge div {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  width: min(100%, 640px);
+}
+
+.yape-enlarge img {
+  width: min(92vw, 560px);
+  height: auto;
+  background: #fff;
+  border-radius: 16px;
+}
+
+.yape-enlarge p {
+  margin: 0;
+  color: var(--gold-soft);
+  font-size: 20px;
+  text-align: center;
+}
+
+.transfer-provider {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.status.transfer-pending {
+  color: var(--gold-soft);
+  background: rgba(242, 213, 138, 0.12);
+  border: 1px solid rgba(242, 213, 138, 0.35);
+}
+
+.status.transfer-declared {
+  color: var(--gold-bright);
+  background: rgba(198, 163, 90, 0.16);
+  border: 1px solid rgba(198, 163, 90, 0.55);
+}
+
+.qr-preview {
+  width: min(100%, 180px);
+  height: auto;
+  margin-top: 8px;
+  background: #fff;
+  border-radius: 12px;
+}
+
+.staff-pay-modal {
+  width: min(100%, 480px);
+  max-height: min(92vh, 760px);
+  overflow: auto;
 }
 
 .status.missing-rate {

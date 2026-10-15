@@ -78,6 +78,9 @@ Endpoints de personal y registros, todos con `Authorization: Bearer <ID token>`:
 - `POST /api/admin/employees/pay` con `employeeId`, `hourlyRate` y `yapePhone`
 - `GET /api/admin/settlements?week=YYYY-MM-DD` calcula la semana sin guardarla
 - `POST /api/admin/settlements` con `employeeId` y `weekStart` confirma la liquidación
+- `POST /api/admin/settlements/pay` con `employeeId` y `weekStart` pide una sesión de pago
+- `GET /api/admin/payments/return` consulta el estado al volver y no marca el pago
+- `POST /api/payments/notifications` recibe la verificación del proveedor
 
 Endpoints de cuentas, con la misma autorización:
 
@@ -90,7 +93,11 @@ Endpoints de cuentas, con la misma autorización:
 
 El alta de un trabajador guarda nombre, código, estado y fecha. No escribe `pin` ni `pinHash`. Los documentos de personal que ya tenían `pinHash` no se reescriben. Ninguna respuesta incluye `pin`, `pinHash` ni la contraseña de una cuenta. El panel administrativo usa estos endpoints para listar, registrar y activar o desactivar personal. `GET /api/admin/employees` incluye `createdAt` en ISO cuando el documento ya tiene esa fecha; si no existe, el valor es `null`.
 
-`hourlyRate` y `yapePhone` son opcionales en `employees`. Configurarlos actualiza solo esos campos. La semana de liquidación va de lunes a domingo, hora de Perú. `GET /api/admin/settlements` no escribe. `POST /api/admin/settlements` guarda en `weeklyPayments/{employeeId}_{lunes}` una fotografía de minutos, tarifa e importe con `status: "confirmed"` y `currency: "PEN"`. No marca pagos ni llama a ningún proveedor. Si la liquidación ya existe, se devuelve la guardada. Un cambio posterior de tarifa no la modifica. Las jornadas abiertas, inválidas o duplicadas no suman horas. Si una jornada cruza el lunes, sus minutos se reparten entre las dos semanas.
+`hourlyRate` y `yapePhone` son opcionales en `employees`. Configurarlos actualiza solo esos campos. La semana de liquidación va de lunes a domingo, hora de Perú. `GET /api/admin/settlements` no escribe. `POST /api/admin/settlements` guarda en `weeklyPayments/{employeeId}_{lunes}` una fotografía de minutos, tarifa e importe con `status: "confirmed"` y `currency: "PEN"`. Si la liquidación ya existe, se devuelve la guardada. Un cambio posterior de tarifa no la modifica. Las jornadas abiertas, inválidas o duplicadas no suman horas. Si una jornada cruza el lunes, sus minutos se reparten entre las dos semanas.
+
+El estado de la liquidación (`confirmed`, `pending`, `missing-rate`) queda separado del pago (`pending`, `processing`, `paid`, `failed`) en `paymentOperations/{employeeId}_{lunes}`. El botón «Pagar con Yape» solo aparece en una liquidación confirmada que todavía no está pagada. El navegador pide la sesión al API y redirige únicamente si la respuesta trae una URL `https` del proveedor. El importe se recalcula en el servidor a partir de los minutos y la tarifa guardados; un monto enviado por el navegador no se usa. Una operación `pending` o `processing` no se vuelve a iniciar. Un pago `paid` bloquea otra sesión. El regreso a la aplicación, aunque la URL traiga `status=approved`, no marca el pago: eso solo lo hace `POST /api/payments/notifications` después de verificar la notificación.
+
+Hoy ese proveedor no está configurado. Yape no publica una API de redirección para pagar al celular de un trabajador, y las pasarelas que menciona para compras por internet documentan cobros hacia el comercio. Sin documentación de dispersión y sin credenciales en el servidor, `POST /api/admin/settlements/pay` responde que la integración está pendiente, no llama a nadie y no guarda una operación. Las credenciales, cuando existan, van solo en el entorno del API. No se escriben en Firestore ni en variables `VITE_`.
 
 ### Primera cuenta de administrador
 

@@ -20,5 +20,14 @@ service cloud.firestore {
     match /weeklyPayments/{paymentId} {
       allow read, write: if false;
     }
+    match /paymentOperations/{operationId} {
+      allow read, write: if false;
+    }
+    match /employeeYapeQr/{employeeId} {
+      allow read, write: if false;
+    }
+    match /yapeDeclarations/{declarationId} {
+      allow read, write: if false;
+    }
   }
 }

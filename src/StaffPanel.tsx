@@ -10,6 +10,7 @@ type Employee = {
   createdAt: string | null;
   hourlyRate: number | null;
   yapePhone: string | null;
+  yapeQrRegistered: boolean;
 };
 
 type Notice = { type: "success" | "error"; text: string };
@@ -38,6 +39,7 @@ function readEmployee(value: unknown): Employee | null {
     createdAt: typeof record.createdAt === "string" && record.createdAt ? record.createdAt : null,
     hourlyRate: typeof record.hourlyRate === "number" && Number.isFinite(record.hourlyRate) ? record.hourlyRate : null,
     yapePhone: typeof record.yapePhone === "string" && record.yapePhone ? record.yapePhone : null,
+    yapeQrRegistered: record.yapeQrRegistered === true,
   };
 }
 
@@ -80,11 +82,22 @@ export default function StaffPanel() {
   const [payTarget, setPayTarget] = useState<Employee | null>(null);
   const [rateInput, setRateInput] = useState("");
   const [phoneInput, setPhoneInput] = useState("");
+  const [qrFile, setQrFile] = useState<File | null>(null);
+  const [qrPreview, setQrPreview] = useState<string | null>(null);
+  const [removeQr, setRemoveQr] = useState(false);
   const [dialogError, setDialogError] = useState("");
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const previewRef = useRef<string | null>(null);
+  const qrRequest = useRef(0);
 
   useEffect(() => {
     void loadEmployees();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (previewRef.current) URL.revokeObjectURL(previewRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -93,7 +106,7 @@ export default function StaffPanel() {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !pendingId) {
         setDeactivateTarget(null);
-        setPayTarget(null);
+        closePayForm();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -218,11 +231,71 @@ export default function StaffPanel() {
     }
   }
 
+  function closePayForm() {
+    qrRequest.current += 1;
+    replacePreview(null);
+    setQrFile(null);
+    setRemoveQr(false);
+    setPayTarget(null);
+  }
+
+  function replacePreview(next: string | null) {
+    if (previewRef.current) URL.revokeObjectURL(previewRef.current);
+    previewRef.current = next;
+    setQrPreview(next);
+  }
+
+  async function loadStoredQr(employeeId: string) {
+    const request = ++qrRequest.current;
+    try {
+      const response = await authorized(`/api/admin/employees/yape-qr?employeeId=${encodeURIComponent(employeeId)}`);
+      if (qrRequest.current !== request || !response.ok) return;
+      const type = response.headers.get("content-type") ?? "";
+      if (!/^image\/(png|jpeg|webp)$/.test(type)) return;
+      const blob = await response.blob();
+      if (qrRequest.current !== request || blob.size === 0 || blob.size > 300_000) return;
+      replacePreview(URL.createObjectURL(blob));
+    } catch (error) {
+      console.error(error instanceof Error ? error.name : "error");
+    }
+  }
+
   function openPay(employee: Employee) {
+    qrRequest.current += 1;
     setDialogError("");
     setRateInput(employee.hourlyRate == null ? "" : String(employee.hourlyRate));
     setPhoneInput(employee.yapePhone ?? "");
+    setQrFile(null);
+    setRemoveQr(false);
+    replacePreview(null);
     setPayTarget(employee);
+    if (employee.yapeQrRegistered) void loadStoredQr(employee.id);
+  }
+
+  function chooseQr(file: File | null) {
+    setDialogError("");
+    setRemoveQr(false);
+    if (!file) {
+      setQrFile(null);
+      return;
+    }
+    const allowed = file.type === "image/jpeg" || file.type === "image/png" || file.type === "image/webp";
+    if (!allowed || file.size === 0 || file.size > 300_000) {
+      setQrFile(null);
+      setDialogError("La imagen debe ser JPEG, PNG o WebP, de hasta 300 KB.");
+      return;
+    }
+    setQrFile(file);
+    replacePreview(URL.createObjectURL(file));
+  }
+
+  async function imageBase64(file: File) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = "";
+    for (let index = 0; index < bytes.length; index += 0x1000) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + 0x1000));
+    }
+    return btoa(binary);
   }
 
   async function savePay(event: FormEvent) {
@@ -246,8 +319,22 @@ export default function StaffPanel() {
         setDialogError(data?.message || "No se pudo guardar la tarifa.");
         return;
       }
-      setPayTarget(null);
-      setNotice({ type: "success", text: "Tarifa y celular actualizados." });
+      if (qrFile || removeQr) {
+        const qrResponse = await authorized("/api/admin/employees/yape-qr", {
+          method: "POST",
+          body: JSON.stringify(qrFile
+            ? { employeeId: payTarget.id, image: await imageBase64(qrFile) }
+            : { employeeId: payTarget.id, remove: true }),
+        });
+        const qrData = await readBody(qrResponse);
+        if (!qrResponse.ok) {
+          setDialogError(qrData?.message || "La tarifa quedó guardada, pero el QR no se pudo actualizar.");
+          await loadEmployees(true);
+          return;
+        }
+      }
+      closePayForm();
+      setNotice({ type: "success", text: qrFile || removeQr ? "Tarifa, celular y QR actualizados." : "Tarifa y celular actualizados." });
       await loadEmployees(true);
     } catch (error) {
       console.error(error instanceof Error ? error.name : "error");
@@ -343,7 +430,10 @@ export default function StaffPanel() {
                           </span>
                         </td>
                         <td>{formatRate(employee.hourlyRate)}</td>
-                        <td>{formatPhone(employee.yapePhone)}</td>
+                        <td>
+                          <div>{formatPhone(employee.yapePhone)}</div>
+                          <div className="transfer-provider">{employee.yapeQrRegistered ? "QR registrado" : "Sin QR"}</div>
+                        </td>
                         <td>{formatCreated(employee.createdAt)}</td>
                         <td>
                           <div className="row-actions">
@@ -374,9 +464,9 @@ export default function StaffPanel() {
 
       {payTarget && (
         <div className="modal-backdrop">
-          <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="pay-title">
+          <div className="modal-card staff-pay-modal" role="dialog" aria-modal="true" aria-labelledby="pay-title">
             <h2 id="pay-title">Tarifa y Yape</h2>
-            <p>{payTarget.name} ({payTarget.employeeCode}). El celular queda asociado para un pago futuro; esta pantalla no realiza ningún pago.</p>
+            <p>{payTarget.name} ({payTarget.employeeCode}). El celular y el QR quedan guardados para una transferencia manual. Esta pantalla no realiza ningún pago ni crea un código.</p>
             <form className="staff-form" onSubmit={(event) => void savePay(event)}>
               <label className="field">
                 <span>Tarifa por hora (S/)</span>
@@ -386,9 +476,23 @@ export default function StaffPanel() {
                 <span>Celular Yape</span>
                 <input value={phoneInput} onChange={(event) => setPhoneInput(event.target.value)} inputMode="tel" autoComplete="tel" placeholder="987654321" disabled={pendingId === payTarget.id} />
               </label>
+              <label className="field">
+                <span>QR auténtico de Yape</span>
+                <input type="file" accept="image/jpeg,image/png,image/webp" disabled={pendingId === payTarget.id} onChange={(event) => chooseQr(event.target.files?.[0] ?? null)} />
+              </label>
+              <p>Sube la imagen del QR que el trabajador generó en su Yape.</p>
+              {qrPreview && <img className="qr-preview" src={qrPreview} alt={`QR de Yape de ${payTarget.name}`} />}
+              {payTarget.yapeQrRegistered && !qrFile && (
+                <label className="field">
+                  <span>
+                    <input type="checkbox" checked={removeQr} disabled={pendingId === payTarget.id} onChange={(event) => setRemoveQr(event.target.checked)} />
+                    {" "}Quitar el QR registrado
+                  </span>
+                </label>
+              )}
               {dialogError && <p className="field-error" role="alert">{dialogError}</p>}
               <div className="modal-actions">
-                <button ref={cancelRef} className="btn btn-secondary" type="button" disabled={pendingId === payTarget.id} onClick={() => setPayTarget(null)}>Cancelar</button>
+                <button ref={cancelRef} className="btn btn-secondary" type="button" disabled={pendingId === payTarget.id} onClick={closePayForm}>Cancelar</button>
                 <button className="btn btn-primary" type="submit" disabled={pendingId === payTarget.id}>
                   {pendingId === payTarget.id && <span className="spinner spinner-light" aria-hidden="true" />}
                   {pendingId === payTarget.id ? "Guardando…" : "Guardar"}

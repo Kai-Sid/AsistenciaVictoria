@@ -9,6 +9,24 @@ export type EmployeeRecord = EmployeePublic & {
   createdAt: string | null;
   hourlyRate: number | null;
   yapePhone: string | null;
+  yapeQrRegistered: boolean;
+};
+
+export type YapeQrRecord = {
+  contentType: "image/jpeg" | "image/png" | "image/webp";
+  bytes: Buffer;
+};
+
+export type YapeDeclarationRecord = {
+  id: string;
+  employeeId: string;
+  weekStart: string;
+  weekEnd: string;
+  amount: number;
+  currency: "PEN";
+  declaredAt: string;
+  declaredByUid: string;
+  declaredByName: string;
 };
 
 export type EmployeeMatch = {
@@ -59,6 +77,46 @@ export type AttendanceDatabase = {
   runAttendanceTransaction<T>(work: (tx: AttendanceTx) => Promise<T>): Promise<T>;
 };
 
+export type PaymentStatus = "pending" | "processing" | "paid" | "failed";
+
+export type PaymentOperationRecord = {
+  id: string;
+  employeeId: string;
+  weekStart: string;
+  weekEnd: string;
+  amount: number;
+  currency: "PEN";
+  yapePhone: string;
+  status: PaymentStatus;
+  attempt: number;
+  provider: string | null;
+  providerReference: string | null;
+  redirectUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PaymentReserveDraft = {
+  employeeId: string;
+  weekStart: string;
+  weekEnd: string;
+  amount: number;
+  currency: "PEN";
+  yapePhone: string;
+};
+
+export type PaymentAttemptResult =
+  | { status: "processing"; provider: string; providerReference: string; redirectUrl: string }
+  | { status: "failed" };
+
+export type VerifiedPayment = {
+  operationId: string;
+  providerReference: string;
+  status: "paid" | "failed" | "processing";
+  amount: number;
+  currency: "PEN";
+};
+
 export type WeeklyPaymentRecord = {
   id: string;
   employeeId: string;
@@ -83,6 +141,10 @@ export type AdminDatabase = {
   listAttendances(): Promise<AttendanceView[]>;
   setEmployeeActive(employeeId: string, active: boolean): Promise<{ ok: true }>;
   updateEmployeePay(employeeId: string, input: { hourlyRate: number; yapePhone: string | null }): Promise<EmployeeRecord>;
+  saveYapeQr(employeeId: string, image: YapeQrRecord | null, now: Date): Promise<EmployeeRecord>;
+  getYapeQr(employeeId: string): Promise<YapeQrRecord | null>;
+  listYapeDeclarations(weekStart: string): Promise<YapeDeclarationRecord[]>;
+  saveYapeDeclaration(draft: YapeDeclarationRecord): Promise<{ declaration: YapeDeclarationRecord; created: boolean }>;
   listSettlementAttendances(from: Date, to: Date): Promise<AttendanceDoc[]>;
   listWeeklyPayments(weekStart: string): Promise<WeeklyPaymentRecord[]>;
   saveWeeklyPayment(draft: {
@@ -98,6 +160,10 @@ export type AdminDatabase = {
     yapePhone: string | null;
     shifts: WeeklyPaymentRecord["shifts"];
   }, now: Date): Promise<{ payment: WeeklyPaymentRecord; created: boolean }>;
+  listPaymentOperations(weekStart: string): Promise<PaymentOperationRecord[]>;
+  reservePaymentOperation(draft: PaymentReserveDraft, now: Date): Promise<{ operation: PaymentOperationRecord; reserved: boolean }>;
+  finishPaymentAttempt(id: string, attempt: number, result: PaymentAttemptResult, now: Date): Promise<PaymentOperationRecord>;
+  applyVerifiedPayment(notice: VerifiedPayment, now: Date): Promise<{ applied: boolean }>;
 };
 
 export type TokenCheck = { uid: string; admin: boolean; email: string | null };

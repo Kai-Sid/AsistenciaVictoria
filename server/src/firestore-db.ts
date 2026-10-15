@@ -1,5 +1,7 @@
 import { FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore";
 import { HttpError } from "./http-error.js";
+import { httpsPaymentUrl, PAYMENT_ALREADY_PAID, PAYMENT_UNCERTAIN } from "./payments.js";
+import { yapeQrContentType } from "./yape-qr.js";
 import { settlementDocumentId } from "./settlements.js";
 import type {
   AdminDatabase,
@@ -9,10 +11,25 @@ import type {
   AttendanceView,
   EmployeePublic,
   EmployeeRecord,
+  PaymentAttemptResult,
+  PaymentOperationRecord,
+  PaymentReserveDraft,
+  PaymentStatus,
+  VerifiedPayment,
   WeeklyPaymentRecord,
+  YapeDeclarationRecord,
+  YapeQrRecord,
 } from "./types.js";
 
 type PaymentDraft = Parameters<AdminDatabase["saveWeeklyPayment"]>[0];
+
+function asBytes(value: unknown): Buffer | null {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  if (typeof value !== "string" || value.length === 0 || value.length > 410_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return null;
+  const bytes = Buffer.from(value, "base64");
+  return bytes.toString("base64") === value ? bytes : null;
+}
 
 function asDate(value: unknown): Date | null {
   if (value instanceof Timestamp) return value.toDate();
@@ -156,6 +173,73 @@ export class FirestoreDatabase implements AttendanceDatabase, AdminDatabase {
     };
   }
 
+  async saveYapeQr(employeeId: string, image: YapeQrRecord | null, now: Date): Promise<EmployeeRecord> {
+    const employeeRef = this.db.collection("employees").doc(employeeId);
+    const qrRef = this.db.collection("employeeYapeQr").doc(employeeId);
+    return this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(employeeRef);
+      if (!snap.exists) throw new HttpError(404, "No encontramos ese trabajador.");
+      if (image) {
+        tx.set(qrRef, {
+          contentType: image.contentType,
+          image: image.bytes.toString("base64"),
+          updatedAt: Timestamp.fromDate(now),
+        });
+      } else {
+        tx.delete(qrRef);
+      }
+      tx.update(employeeRef, {
+        yapeQrRegistered: image != null,
+        updatedAt: Timestamp.fromDate(now),
+      });
+      return {
+        ...this.employeeRecord(snap.id, snap.get.bind(snap)),
+        yapeQrRegistered: image != null,
+      };
+    });
+  }
+
+  async getYapeQr(employeeId: string): Promise<YapeQrRecord | null> {
+    if (!employeeId || employeeId.includes("/") || employeeId.length > 128) return null;
+    const snap = await this.db.collection("employeeYapeQr").doc(employeeId).get();
+    if (!snap.exists) return null;
+    const bytes = asBytes(snap.get("image"));
+    const contentType = bytes ? yapeQrContentType(bytes) : null;
+    if (!bytes || !contentType || snap.get("contentType") !== contentType) return null;
+    return { contentType, bytes };
+  }
+
+  async listYapeDeclarations(weekStart: string): Promise<YapeDeclarationRecord[]> {
+    const snap = await this.db.collection("yapeDeclarations").where("weekStart", "==", weekStart).get();
+    return snap.docs.flatMap((doc) => {
+      const declaration = this.declarationRecord(doc.id, doc.get.bind(doc));
+      return declaration ? [declaration] : [];
+    });
+  }
+
+  saveYapeDeclaration(draft: YapeDeclarationRecord): Promise<{ declaration: YapeDeclarationRecord; created: boolean }> {
+    const ref = this.db.collection("yapeDeclarations").doc(draft.id);
+    return this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (snap.exists) {
+        const current = this.declarationRecord(snap.id, snap.get.bind(snap));
+        if (!current) throw new HttpError(409, "La declaración de esa liquidación no se puede leer.");
+        return { declaration: current, created: false };
+      }
+      tx.create(ref, {
+        employeeId: draft.employeeId,
+        weekStart: draft.weekStart,
+        weekEnd: draft.weekEnd,
+        amount: draft.amount,
+        currency: "PEN",
+        declaredAt: Timestamp.fromDate(new Date(draft.declaredAt)),
+        declaredByUid: draft.declaredByUid,
+        declaredByName: draft.declaredByName,
+      });
+      return { declaration: { ...draft }, created: true };
+    });
+  }
+
   async listSettlementAttendances(from: Date, to: Date): Promise<AttendanceDoc[]> {
     const snap = await this.db.collection("attendances")
       .where("checkInAt", ">=", Timestamp.fromDate(from))
@@ -208,6 +292,124 @@ export class FirestoreDatabase implements AttendanceDatabase, AdminDatabase {
     });
   }
 
+  async listPaymentOperations(weekStart: string): Promise<PaymentOperationRecord[]> {
+    const snap = await this.db.collection("paymentOperations").where("weekStart", "==", weekStart).get();
+    return snap.docs.flatMap((doc) => {
+      const operation = this.paymentOperation(doc.id, doc.get.bind(doc));
+      return operation ? [operation] : [];
+    });
+  }
+
+  async reservePaymentOperation(draft: PaymentReserveDraft, now: Date): Promise<{ operation: PaymentOperationRecord; reserved: boolean }> {
+    const id = settlementDocumentId(draft.employeeId, draft.weekStart);
+    const ref = this.db.collection("paymentOperations").doc(id);
+    return this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (snap.exists) {
+        const current = this.paymentOperation(snap.id, snap.get.bind(snap));
+        if (!current) throw new HttpError(409, "La operación de pago de esa liquidación no se puede leer.");
+        if (current.status === "paid") throw new HttpError(409, PAYMENT_ALREADY_PAID);
+        if (current.status === "pending" || current.status === "processing") return { operation: current, reserved: false };
+        const next: PaymentOperationRecord = {
+          ...current,
+          weekEnd: draft.weekEnd,
+          amount: draft.amount,
+          yapePhone: draft.yapePhone,
+          status: "pending",
+          attempt: current.attempt + 1,
+          provider: null,
+          providerReference: null,
+          redirectUrl: null,
+          updatedAt: now.toISOString(),
+        };
+        tx.update(ref, {
+          weekEnd: next.weekEnd,
+          amount: next.amount,
+          yapePhone: next.yapePhone,
+          status: "pending",
+          attempt: next.attempt,
+          provider: null,
+          providerReference: null,
+          redirectUrl: null,
+          updatedAt: Timestamp.fromDate(now),
+        });
+        return { operation: next, reserved: true };
+      }
+      const operation: PaymentOperationRecord = {
+        id,
+        employeeId: draft.employeeId,
+        weekStart: draft.weekStart,
+        weekEnd: draft.weekEnd,
+        amount: draft.amount,
+        currency: "PEN",
+        yapePhone: draft.yapePhone,
+        status: "pending",
+        attempt: 1,
+        provider: null,
+        providerReference: null,
+        redirectUrl: null,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      };
+      tx.create(ref, {
+        ...operation,
+        createdAt: Timestamp.fromDate(now),
+        updatedAt: Timestamp.fromDate(now),
+      });
+      return { operation, reserved: true };
+    });
+  }
+
+  async finishPaymentAttempt(id: string, attempt: number, result: PaymentAttemptResult, now: Date): Promise<PaymentOperationRecord> {
+    const ref = this.db.collection("paymentOperations").doc(id);
+    return this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const current = snap.exists ? this.paymentOperation(snap.id, snap.get.bind(snap)) : null;
+      if (!current || current.attempt !== attempt || current.status !== "pending") throw new HttpError(409, PAYMENT_UNCERTAIN);
+      const next: PaymentOperationRecord = result.status === "processing"
+        ? {
+          ...current,
+          status: "processing",
+          provider: result.provider,
+          providerReference: result.providerReference,
+          redirectUrl: result.redirectUrl,
+          updatedAt: now.toISOString(),
+        }
+        : {
+          ...current,
+          status: "failed",
+          provider: null,
+          providerReference: null,
+          redirectUrl: null,
+          updatedAt: now.toISOString(),
+        };
+      tx.update(ref, {
+        status: next.status,
+        provider: next.provider,
+        providerReference: next.providerReference,
+        redirectUrl: next.redirectUrl,
+        updatedAt: Timestamp.fromDate(now),
+      });
+      return next;
+    });
+  }
+
+  async applyVerifiedPayment(notice: VerifiedPayment, now: Date): Promise<{ applied: boolean }> {
+    if (notice.currency !== "PEN" || (notice.status !== "paid" && notice.status !== "failed")) return { applied: false };
+    if (notice.operationId.includes("/") || notice.operationId.length > 300) return { applied: false };
+    const ref = this.db.collection("paymentOperations").doc(notice.operationId);
+    return this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const current = snap.exists ? this.paymentOperation(snap.id, snap.get.bind(snap)) : null;
+      if (!current || current.status !== "processing" || !current.providerReference || current.providerReference !== notice.providerReference) {
+        return { applied: false };
+      }
+      if (Math.round(current.amount * 100) !== Math.round(notice.amount * 100)) return { applied: false };
+      tx.update(ref, { status: notice.status, updatedAt: Timestamp.fromDate(now) });
+      return { applied: true };
+    });
+  }
+
   private employeeRecord(id: string, get: (field: string) => unknown): EmployeeRecord {
     const hourlyRate = get("hourlyRate");
     const yapePhone = get("yapePhone");
@@ -219,6 +421,31 @@ export class FirestoreDatabase implements AttendanceDatabase, AdminDatabase {
       createdAt: asDate(get("createdAt"))?.toISOString() ?? null,
       hourlyRate: typeof hourlyRate === "number" && Number.isFinite(hourlyRate) && hourlyRate > 0 ? Math.round(hourlyRate * 100) / 100 : null,
       yapePhone: typeof yapePhone === "string" && /^9\d{8}$/.test(yapePhone) ? yapePhone : null,
+      yapeQrRegistered: get("yapeQrRegistered") === true,
+    };
+  }
+
+  private declarationRecord(id: string, get: (field: string) => unknown): YapeDeclarationRecord | null {
+    const amount = get("amount");
+    const declaredAt = asDate(get("declaredAt"));
+    const weekStart = String(get("weekStart") ?? "");
+    const weekEnd = String(get("weekEnd") ?? "");
+    const declaredByUid = get("declaredByUid");
+    const declaredByName = get("declaredByName");
+    if (typeof amount !== "number" || !Number.isFinite(amount) || !declaredAt || !weekStart || !weekEnd) return null;
+    if (typeof declaredByUid !== "string" || declaredByUid.length === 0 || declaredByUid.length > 128) return null;
+    if (typeof declaredByName !== "string" || declaredByName.length < 2 || declaredByName.length > 120) return null;
+    if (get("currency") != null && get("currency") !== "PEN") return null;
+    return {
+      id,
+      employeeId: String(get("employeeId") ?? ""),
+      weekStart,
+      weekEnd,
+      amount,
+      currency: "PEN",
+      declaredAt: declaredAt.toISOString(),
+      declaredByUid,
+      declaredByName,
     };
   }
 
@@ -273,4 +500,41 @@ export class FirestoreDatabase implements AttendanceDatabase, AdminDatabase {
       updatedAt: asDate(get("updatedAt"))?.toISOString() ?? "",
     };
   }
+
+  private paymentOperation(id: string, get: (field: string) => unknown): PaymentOperationRecord | null {
+    const amount = get("amount");
+    const attempt = get("attempt");
+    const status = get("status");
+    const weekStart = String(get("weekStart") ?? "");
+    const weekEnd = String(get("weekEnd") ?? "");
+    const yapePhone = get("yapePhone");
+    const currency = get("currency");
+    if (typeof amount !== "number" || !Number.isFinite(amount) || typeof attempt !== "number" || !Number.isInteger(attempt) || attempt < 1) return null;
+    if (!isPaymentStatus(status) || !weekStart || !weekEnd) return null;
+    if (currency != null && currency !== "PEN") return null;
+    if (typeof yapePhone !== "string" || !/^9\d{8}$/.test(yapePhone)) return null;
+    const provider = get("provider");
+    const providerReference = get("providerReference");
+    const redirectUrl = get("redirectUrl");
+    return {
+      id,
+      employeeId: String(get("employeeId") ?? ""),
+      weekStart,
+      weekEnd,
+      amount,
+      currency: "PEN",
+      yapePhone,
+      status,
+      attempt,
+      provider: typeof provider === "string" && provider.length > 0 ? provider : null,
+      providerReference: typeof providerReference === "string" && providerReference.length > 0 ? providerReference : null,
+      redirectUrl: typeof redirectUrl === "string" ? httpsPaymentUrl(redirectUrl) : null,
+      createdAt: asDate(get("createdAt"))?.toISOString() ?? "",
+      updatedAt: asDate(get("updatedAt"))?.toISOString() ?? "",
+    };
+  }
+}
+
+function isPaymentStatus(value: unknown): value is PaymentStatus {
+  return value === "pending" || value === "processing" || value === "paid" || value === "failed";
 }
